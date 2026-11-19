@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon. The foreground is a simple sunrise placeholder vector.
+     Replace it with the real 1600px artwork (workspace/future-me-icon/)
+     cut into mipmap-xxxhdpi etc. — see README.md. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/cream_bg" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

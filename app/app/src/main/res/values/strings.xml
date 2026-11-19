@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">未来我</string>
+
+    <string name="nav_home">许愿</string>
+    <string name="nav_letters">未来信</string>
+    <string name="nav_daily">每日一句</string>
+    <string name="nav_me">我的</string>
+
+    <string name="action_retry">重试</string>
+    <string name="action_save">保存</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_confirm">确定</string>
+    <string name="loading">加载中…</string>
+    <string name="network_error">网络不可用，显示的是上次保存的内容</string>
+    <string name="unknown_error">出错了，请稍后再试</string>
+
+    <string name="wish_hint">写下你的愿望，比如：90 天后通过教师资格证考试</string>
+    <string name="wish_submit">许下愿望</string>
+    <string name="wish_created">愿望已许下，未来在等你</string>
+    <string name="wish_empty">写下第一个愿望，开始和未来的自己对话</string>
+    <string name="my_wishes">我的愿望</string>
+    <string name="wish_target_date">目标日</string>
+    <string name="wish_days_left">还有 %1$d 天</string>
+    <string name="wish_days_overdue">已到目标日</string>
+    <string name="wish_status_active">进行中</string>
+    <string name="wish_status_done">已完成</string>
+
+    <string name="letters_title">未来信</string>
+    <string name="letters_empty">还没有未来信，先选一个愿望生成一封吧</string>
+    <string name="generate_letter">生成未来信</string>
+    <string name="generating_letter">未来正在写信…</string>
+    <string name="letter_generated">未来信已生成</string>
+    <string name="letter_ai_label">AI 生成</string>
+    <string name="pick_voice">选择音色</string>
+    <string name="voice_current">当前音色</string>
+    <string name="voice_free">免费</string>
+    <string name="voice_member">会员</string>
+    <string name="audio_no_audio">这封信还没有语音</string>
+    <string name="audio_play">播放</string>
+    <string name="audio_pause">暂停</string>
+
+    <string name="daily_title">每日一句</string>
+    <string name="checkin">打卡</string>
+    <string name="checkin_done">今日已打卡</string>
+    <string name="checkin_success">打卡成功，坚持就是胜利</string>
+    <string name="streak_days">坚持 %1$d 天</string>
+    <string name="total_days">累计 %1$d 天</string>
+
+    <string name="me_membership">会员</string>
+    <string name="me_membership_free">免费体验中 · 第一阶段全部免费</string>
+    <string name="me_membership_trial">试用中 · 还剩 %1$d 天</string>
+    <string name="me_membership_active">订阅中 · %1$s 到期</string>
+    <string name="me_membership_plan">7 天试用 · ¥9.9/月</string>
+    <string name="vision_board">愿景板</string>
+    <string name="vision_board_save">保存图片</string>
+    <string name="vision_board_saved">已保存到相册</string>
+    <string name="vision_board_no_wish">先许一个愿望，再生成愿景板</string>
+    <string name="server_address">服务器地址</string>
+    <string name="server_address_hint">例如 http://100.72.221.19:8000</string>
+    <string name="server_saved">服务器地址已保存，正在重新连接</string>
+    <string name="messages">消息</string>
+    <string name="activities">活动</string>
+    <string name="messages_empty">暂无新消息，打开 App 时会自动拉取</string>
+    <string name="about_title">关于</string>
+    <string name="about_text">未来我 · 写下愿望，生成一封来自未来的鼓励信，每天打卡坚持，和未来的自己一起慢慢变好。\n信件由 AI 生成，仅作积极心理鼓励，不承诺任何结果。</string>
+    <string name="version">版本 0.1.0</string>
+
+    <string name="reminder_channel_name">每日提醒</string>
+    <string name="reminder_channel_desc">早上和晚上的读信 / 打卡提醒</string>
+    <string name="reminder_morning_title">今天的未来信等你读一读</string>
+    <string name="reminder_morning_text">打开未来我，看看未来的自己给你写了什么</string>
+    <string name="reminder_evening_title">今天打卡了吗？</string>
+    <string name="reminder_evening_text">坚持一下，离目标又近了一天</string>
+    <string name="notification_permission_text">开启通知后，每天早上 8 点和晚上 8 点会提醒你读信和打卡</string>
+</resources>

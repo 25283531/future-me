@@ -1,0 +1,16 @@
+services:
+  futureme-api:
+    # Image is built on GitHub Actions and pushed to GHCR; the router only pulls and runs it (no local build).
+    image: ghcr.io/25283531/future-me-backend:latest
+    container_name: futureme-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # SQLite DB + cached audio persist here (on the router: ./data).
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+      PORT: "8000"

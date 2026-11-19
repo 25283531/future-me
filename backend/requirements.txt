@@ -1,0 +1,6 @@
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+# Edge TTS (free fallback, unofficial Microsoft endpoint). Imported lazily;
+# the server still starts without it, but the edge fallback then fails.
+edge-tts==7.3.1
