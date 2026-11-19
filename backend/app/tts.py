@@ -4,7 +4,10 @@ Chain (in order): Qwen3-TTS (DashScope, primary) -> Zhipu GLM-TTS ->
 Tencent TTS (premium) -> Edge TTS (free fallback, unofficial endpoint).
 A provider is skipped when its key is not configured. If the requested
 voice belongs to a specific provider, that provider is tried first, then
-the rest of the chain.
+the admin-chosen default TTS provider, then the rest of the chain.
+
+Keys come from the settings table (admin console /admin), never from env.
+DashScope is shared with 千问 LLM; the Zhipu key is shared with GLM LLM.
 
 Audio is cached on disk keyed by sha256(text + voice_id) so the same
 letter + voice is only ever synthesized once.
@@ -21,6 +24,7 @@ from pathlib import Path
 
 import httpx
 
+from . import database
 from .catalog import VOICE_MAP
 from .config import settings
 
@@ -43,7 +47,7 @@ def _qwen_synthesize(text: str, voice: str) -> bytes:
     Response: output.audio is a URL (download it) or base64 audio."""
     url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     headers = {
-        "Authorization": f"Bearer {settings.DASHSCOPE_API_KEY}",
+        "Authorization": f"Bearer {database.get_setting('dashscope.api_key')}",
         "Content-Type": "application/json",
     }
     with httpx.Client(timeout=60.0, trust_env=False) as client:
@@ -51,7 +55,7 @@ def _qwen_synthesize(text: str, voice: str) -> bytes:
             url,
             headers=headers,
             json={
-                "model": settings.QWEN_MODEL,
+                "model": "qwen3-tts-flash",
                 "input": {"text": text, "voice": voice},
                 "parameters": {"format": "mp3"},
             },
@@ -75,7 +79,7 @@ def _zhipu_synthesize(text: str, voice: str) -> bytes:
     """Zhipu GLM-TTS: POST /api/paas/v4/audio/speech, binary audio back."""
     url = "https://open.bigmodel.cn/api/paas/v4/audio/speech"
     headers = {
-        "Authorization": f"Bearer {settings.ZHISHU_API_KEY}",
+        "Authorization": f"Bearer {database.get_setting('zhipu.api_key')}",
         "Content-Type": "application/json",
     }
     with httpx.Client(timeout=60.0, trust_env=False) as client:
@@ -110,7 +114,7 @@ def _tencent_synthesize(text: str, voice_type: str) -> bytes:
     """Tencent Cloud TTS (TC3-HMAC-SHA256 signed). Returns base64 audio."""
     service, host = "tts", "tts.tencentcloudapi.com"
     action, version = "TextToVoice", "2019-08-23"
-    region = settings.TENCENT_REGION
+    region = database.get_setting("tencent.region", "ap-guangzhou")
     payload = {
         "Text": text,
         "SessionId": hashlib.md5(f"{text}{time.time()}".encode()).hexdigest(),
@@ -135,9 +139,11 @@ def _tencent_synthesize(text: str, voice_type: str) -> bytes:
         f"TC3-HMAC-SHA256\n{timestamp}\n{credential_scope}\n"
         f"{hashlib.sha256(canonical_request.encode()).hexdigest()}"
     )
-    signature = _tencent_sign(settings.TENCENT_SECRET_KEY, date_stamp, service, string_to_sign)
+    signature = _tencent_sign(
+        database.get_setting("tencent.secret_key"), date_stamp, service, string_to_sign
+    )
     authorization = (
-        f"TC3-HMAC-SHA256 Credential={settings.TENCENT_SECRET_ID}/{credential_scope}, "
+        f"TC3-HMAC-SHA256 Credential={database.get_setting('tencent.secret_id')}/{credential_scope}, "
         f"SignedHeaders={signed_headers}, Signature={signature}"
     )
     headers = {
@@ -185,16 +191,30 @@ def _edge_synthesize(text: str, voice: str) -> bytes:
 
 # provider -> (needs_key, synthesize_fn)
 _PROVIDERS = {
-    "qwen": (lambda: bool(settings.DASHSCOPE_API_KEY), _qwen_synthesize),
-    "zhipu": (lambda: bool(settings.ZHISHU_API_KEY), _zhipu_synthesize),
+    "qwen": (lambda: bool(database.get_setting("dashscope.api_key")), _qwen_synthesize),
+    "zhipu": (lambda: bool(database.get_setting("zhipu.api_key")), _zhipu_synthesize),
     "tencent": (
-        lambda: bool(settings.TENCENT_SECRET_ID and settings.TENCENT_SECRET_KEY),
+        lambda: bool(
+            database.get_setting("tencent.secret_id")
+            and database.get_setting("tencent.secret_key")
+        ),
         _tencent_synthesize,
     ),
     "edge": (lambda: True, _edge_synthesize),
 }
 
 CHAIN_ORDER = ["qwen", "zhipu", "tencent", "edge"]
+
+
+def chain_order() -> list[str]:
+    """Fallback order: voice's provider is moved first by the caller; the
+    admin-chosen default TTS provider comes next, then the rest."""
+    default = database.get_setting("tts.default_provider", "qwen")
+    order = list(CHAIN_ORDER)
+    if default in order:
+        order.remove(default)
+        order.insert(0, default)
+    return order
 
 
 def synthesize(text: str, voice_id: str) -> tuple[Path, str, bool]:
@@ -215,7 +235,7 @@ def synthesize(text: str, voice_id: str) -> tuple[Path, str, bool]:
 
     settings.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-    order = list(CHAIN_ORDER)
+    order = chain_order()
     preferred = voice["provider"]
     if preferred in order:
         order.remove(preferred)

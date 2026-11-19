@@ -50,8 +50,8 @@ class ApiClient {
     }
 
     companion object {
-        /** Tailscale IP of the home router backend; LAN fallback is 10.0.1.1:8000. */
-        const val DEFAULT_BASE_URL = "http://100.72.221.19:8000"
-        const val LAN_FALLBACK_BASE_URL = "http://10.0.1.1:8000"
+        /** Tailscale IP of the home router backend; LAN fallback is 10.0.1.1:6999. */
+        const val DEFAULT_BASE_URL = "http://100.72.221.19:6999"
+        const val LAN_FALLBACK_BASE_URL = "http://10.0.1.1:6999"
     }
 }

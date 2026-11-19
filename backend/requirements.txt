@@ -4,3 +4,6 @@ httpx==0.28.1
 # Edge TTS (free fallback, unofficial Microsoft endpoint). Imported lazily;
 # the server still starts without it, but the edge fallback then fails.
 edge-tts==7.3.1
+# Field-level encryption of user content at rest (Fernet, app/crypto.py):
+# wishes/letters/daily-messages/memories are encrypted before SQLite writes.
+cryptography==44.0.0

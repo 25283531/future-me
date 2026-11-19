@@ -1,9 +1,12 @@
 """未来我 (Future Me) backend — FastAPI + SQLite.
 
 Anonymous device auth; no payment in phase 1 (everything unlocked).
-All keys come from env vars only. See .env.example.
+All API keys and admin-editable config live in the SQLite settings table
+and are edited in the web admin console (/admin) — nothing secret comes
+from env vars. User content (wishes / letters / daily sentences /
+memories) is encrypted at rest (see crypto.py); the admin console only
+ever sees aggregate numbers, never user text.
 """
-import json
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
@@ -13,10 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import database
+from . import admin, database
 from .auth import get_current_device, issue_token
-from .catalog import VOICES, daily_sentence, public_voice
+from .catalog import VOICES, public_voice
 from .config import settings
+from .context import build_user_context
+from .daily import get_daily_sentence_for_device
 from .llm import (
     LLMError,
     LLMNotConfigured,
@@ -37,13 +42,21 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="未来我 Future Me API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="未来我 Future Me API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(admin.router)
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_page():
+    """Web admin console (single static page + vanilla JS)."""
+    path = Path(__file__).resolve().parent / "admin.html"
+    return FileResponse(path, media_type="text/html")
 
 
 # ---------- schemas ----------
@@ -69,27 +82,22 @@ class TTSIn(BaseModel):
     voice_id: str
 
 
-# ---------- helpers ----------
-
-def _load_json_file(name: str) -> list[dict]:
-    path = settings.DATA_DIR / name
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except (ValueError, OSError):
-        return []
-
-
 # ---------- health / auth ----------
 
 @app.get("/api/v1/health")
 def health():
+    providers: list[str] = []
+    if database.get_setting("dashscope.api_key"):
+        providers.append("qwen")
+    if database.get_setting("zhipu.api_key"):
+        providers.append("zhipu")
+    if database.get_setting("tencent.secret_id") and database.get_setting("tencent.secret_key"):
+        providers.append("tencent")
+    providers.append("edge")  # free fallback, no key needed
     return {
         "status": "ok",
         "version": app.version,
-        "providers_configured": settings.configured_providers,
+        "providers_configured": providers,
     }
 
 
@@ -137,7 +145,12 @@ def generate_letter(body: LetterGenerateIn, device_id: str = Depends(get_current
     if body.voice_id and body.voice_id not in {v["id"] for v in VOICES}:
         raise HTTPException(status_code=400, detail=f"unknown voice_id: {body.voice_id}")
     try:
-        text = generate_letter_text(wish["text"], wish["days"], provider=body.provider)
+        text = generate_letter_text(
+            wish["text"],
+            wish["days"],
+            provider=body.provider,
+            context=build_user_context(device_id),
+        )
     except LLMProviderError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except LLMNotConfigured as e:
@@ -207,7 +220,9 @@ def serve_audio(filename: str):
 
 @app.get("/api/v1/daily-sentence")
 def get_daily_sentence(device_id: str = Depends(get_current_device)):
-    return daily_sentence()
+    # Personalized: one AI sentence per device per day, from the future
+    # self, tied to the user's own wish + context; same-day cached.
+    return get_daily_sentence_for_device(device_id)
 
 
 @app.post("/api/v1/checkin")
@@ -225,14 +240,26 @@ def checkin_status(device_id: str = Depends(get_current_device)):
 
 @app.get("/api/v1/activities")
 def list_activities(device_id: str = Depends(get_current_device)):
-    return [a for a in _load_json_file("activities.json") if a.get("active", True)]
+    return [
+        {
+            "id": a["id"],
+            "title": a["title"],
+            "body": a["body"],
+            "image_url": a["image_url"],
+            "start_at": a["start_at"],
+            "end_at": a["end_at"],
+            "active": bool(a["active"]),
+        }
+        for a in database.list_activities()
+    ]
 
 
 @app.get("/api/v1/messages")
 def list_messages(device_id: str = Depends(get_current_device)):
-    msgs = _load_json_file("messages.json")
-    msgs.sort(key=lambda m: m.get("created_at", ""), reverse=True)
-    return msgs
+    return [
+        {"id": m["id"], "title": m["title"], "body": m["body"], "created_at": m["created_at"]}
+        for m in database.list_messages()
+    ]
 
 
 # ---------- membership (phase 1: everything free) ----------
@@ -242,9 +269,17 @@ def membership_status(device_id: str = Depends(get_current_device)):
     device = database.get_or_create_device(device_id)
     created = date.fromisoformat(device["created_at"])
     days_used = (date.today() - created).days
+    try:
+        trial_days = int(database.get_setting("membership.trial_days", "7"))
+    except ValueError:
+        trial_days = 7
+    try:
+        price = float(database.get_setting("membership.price_monthly_cny", "9.9"))
+    except ValueError:
+        price = 9.9
     return {
         "plan": "free_trial",
-        "trial_days_left": max(0, settings.TRIAL_DAYS - days_used),
-        "price_monthly_cny": settings.PRICE_MONTHLY_CNY,
-        "paywalled": False,
+        "trial_days_left": max(0, trial_days - days_used),
+        "price_monthly_cny": price,
+        "paywalled": database.get_setting("membership.paywalled", "0") == "1",
     }

@@ -284,13 +284,13 @@ fun MeScreen(viewModel: MeViewModel) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
                                 onClick = {
-                                    serverUrlText = "http://100.72.221.19:8000"
+                                    serverUrlText = "http://100.72.221.19:6999"
                                     viewModel.saveBaseUrl(serverUrlText)
                                 }
                             ) { Text(text = "Tailscale") }
                             OutlinedButton(
                                 onClick = {
-                                    serverUrlText = "http://10.0.1.1:8000"
+                                    serverUrlText = "http://10.0.1.1:6999"
                                     viewModel.saveBaseUrl(serverUrlText)
                                 }
                             ) { Text(text = "局域网") }

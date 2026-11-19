@@ -13,8 +13,8 @@ COPY data ./data
 VOLUME ["/app/data"]
 
 ENV DATA_DIR=/app/data
-ENV PORT=8000
+ENV PORT=6999
 
-EXPOSE 8000
+EXPOSE 6999
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-6999}"]

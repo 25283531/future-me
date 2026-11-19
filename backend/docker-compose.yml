@@ -5,7 +5,7 @@ services:
     container_name: futureme-api
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "6999:6999"
     volumes:
       # SQLite DB + cached audio persist here (on the router: ./data).
       - ./data:/app/data
@@ -13,4 +13,4 @@ services:
       - .env
     environment:
       DATA_DIR: /app/data
-      PORT: "8000"
+      PORT: "6999"

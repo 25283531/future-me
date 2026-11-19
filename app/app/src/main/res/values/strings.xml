@@ -57,7 +57,7 @@
     <string name="vision_board_saved">已保存到相册</string>
     <string name="vision_board_no_wish">先许一个愿望，再生成愿景板</string>
     <string name="server_address">服务器地址</string>
-    <string name="server_address_hint">例如 http://100.72.221.19:8000</string>
+    <string name="server_address_hint">例如 http://100.72.221.19:6999</string>
     <string name="server_saved">服务器地址已保存，正在重新连接</string>
     <string name="messages">消息</string>
     <string name="activities">活动</string>

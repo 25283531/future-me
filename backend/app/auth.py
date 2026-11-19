@@ -3,6 +3,10 @@
 Token format: base64url(device_id) + "." + random_hex + "." + hmac_sha256(secret, device_id + "." + random_hex)
 No password, no personal data. The token is verified by recomputing the HMAC
 and checking the device exists in the DB.
+
+The signing secret lives in the settings table (auto-generated on first
+boot); a JWT_SECRET env var, when set, overrides it for backwards
+compatibility with existing deployments.
 """
 import base64
 import hashlib
@@ -13,9 +17,12 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from . import database
-from .config import settings
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+def _secret() -> str:
+    return database.get_or_create_jwt_secret()
 
 
 def _b64e(s: str) -> str:
@@ -30,7 +37,7 @@ def issue_token(device_id: str) -> str:
     nonce = secrets.token_hex(16)
     payload = f"{device_id}.{nonce}"
     sig = hmac.new(
-        settings.JWT_SECRET.encode(), payload.encode(), hashlib.sha256
+        _secret().encode(), payload.encode(), hashlib.sha256
     ).hexdigest()
     return f"{_b64e(device_id)}.{nonce}.{sig}"
 
@@ -44,7 +51,7 @@ def verify_token(token: str) -> str:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
     payload = f"{device_id}.{nonce}"
     expected = hmac.new(
-        settings.JWT_SECRET.encode(), payload.encode(), hashlib.sha256
+        _secret().encode(), payload.encode(), hashlib.sha256
     ).hexdigest()
     if not hmac.compare_digest(expected, sig):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")

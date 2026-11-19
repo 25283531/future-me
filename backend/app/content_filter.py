@@ -24,6 +24,33 @@ BANNED_PHRASES = [
     "一定能", "保证你", "肯定能", "包你", "必定会",
 ]
 
+# Violation types for the admin compliance overview. The backend only ever
+# stores and shows TYPE + COUNT per day — never the offending text, never
+# the device/user it came from (privacy red line).
+VIOLATION_TYPES: dict[str, list[str]] = {
+    "玄学占卜": [
+        "玄学", "塔罗", "占星", "星座", "显化", "改运", "转运", "宇宙能量",
+        "注定", "必成", "改命", "命中注定", "算命", "风水", "开光", "锦鲤",
+        "许愿成真", "心想事成",
+    ],
+    "医疗承诺": ["保证治愈"],
+    "结果保证": [
+        "包过", "保过", "必过", "保证通过", "一定能考上", "保证考上",
+        "一定能", "保证你", "肯定能", "包你", "必定会",
+    ],
+    "财运": ["财运", "发财"],
+}
+
+
+def classify_violation(text: str) -> list[str]:
+    """Return the violation types present in `text` (each at most once).
+
+    Used only for aggregate counting — the text itself is never stored
+    with the result and never shown in the admin console.
+    """
+    clean = _clean(text)
+    return [t for t, words in VIOLATION_TYPES.items() if any(w in clean for w in words)]
+
 MIN_CHARS = 150
 MAX_CHARS = 200
 

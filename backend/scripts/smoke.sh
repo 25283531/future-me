@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export DATA_DIR="$(mktemp -d /tmp/futureme-smoke-XXXXXX)"
 export JWT_SECRET="smoke-secret"
-unset DASHSCOPE_API_KEY ZHISHU_API_KEY HUNYUAN_API_KEY SILICONFLOW_API_KEY GENERIC_LLM_API_KEY GENERIC_LLM_BASE_URL GENERIC_LLM_MODEL TENCENT_SECRET_ID TENCENT_SECRET_KEY || true
+# API keys are no longer read from env vars (they live in the admin console).
 PORT="${SMOKE_PORT:-18080}"
 
 PY=".venv/bin/python"
@@ -63,6 +63,34 @@ cat /tmp/smoke-letter.json; echo
 
 echo "== membership =="
 curl -fsS "$BASE/api/v1/membership/status" -H "Authorization: Bearer $TOKEN"; echo
+
+echo "== admin: unauthenticated dashboard rejected (expect 401) =="
+curl -s -o /dev/null -w '%{http_code}\n' "$BASE/api/v1/admin/dashboard"
+
+echo "== admin: setup + login + dashboard + settings =="
+COOKIE_JAR="$DATA_DIR/cookies.txt"
+curl -fsS -c "$COOKIE_JAR" -X POST "$BASE/api/v1/admin/setup" \
+  -H 'Content-Type: application/json' -d '{"password":"smoke-admin-1"}'; echo
+curl -fsS -b "$COOKIE_JAR" "$BASE/api/v1/admin/dashboard"; echo
+curl -fsS -b "$COOKIE_JAR" "$BASE/api/v1/admin/settings" | head -c 400; echo
+# membership config via admin must be reflected in the public endpoint
+curl -fsS -b "$COOKIE_JAR" -X POST "$BASE/api/v1/admin/settings" \
+  -H 'Content-Type: application/json' \
+  -d '{"settings":{"membership.trial_days":"14","membership.price_monthly_cny":"19.9","membership.paywalled":"1"}}' >/dev/null
+curl -fsS "$BASE/api/v1/membership/status" -H "Authorization: Bearer $TOKEN"; echo
+echo "== admin: privacy — dashboard must not contain the wish text =="
+curl -fsS -b "$COOKIE_JAR" "$BASE/api/v1/admin/dashboard" | grep -q "教师资格证" && { echo "FAIL: wish text leaked into admin dashboard"; exit 1; } || echo "ok: no user text in dashboard"
+echo "== admin: encryption — key file exists with mode 0600 =="
+ls -l "$DATA_DIR/.encryption.key"
+[ "$(stat -c %a "$DATA_DIR/.encryption.key")" = "600" ] || { echo "FAIL: key file mode is not 0600"; exit 1; }
+echo "== admin: encryption — DB stores ciphertext, not plaintext =="
+"$PY" -c "
+import sqlite3
+conn = sqlite3.connect('$DATA_DIR/futureme.db')
+row = conn.execute('SELECT text FROM wishes').fetchone()
+assert row and '教师资格证' not in row[0], 'FAIL: plaintext wish in DB'
+print('ok: wish stored encrypted')
+"
 
 echo "== TTS via Edge fallback =="
 TTS_JSON=$(curl -fsS -X POST "$BASE/api/v1/tts/synthesize" \

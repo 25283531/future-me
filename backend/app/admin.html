@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>未来我 · 后台管理</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #FFF7E8; color: #333; }
+  header { background: #E8833A; color: #fff; padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { margin: 0; font-size: 20px; }
+  header button { background: rgba(255,255,255,.2); color: #fff; border: 1px solid #fff; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  nav { display: flex; gap: 4px; padding: 10px 20px 0; flex-wrap: wrap; }
+  nav button { border: 1px solid #E8D9C0; background: #fff; border-radius: 8px 8px 0 0; padding: 8px 14px; cursor: pointer; font-size: 14px; }
+  nav button.active { background: #E8833A; color: #fff; border-color: #E8833A; }
+  main { padding: 16px 20px 40px; max-width: 960px; }
+  section { display: none; background: #fff; border: 1px solid #E8D9C0; border-radius: 0 8px 8px 8px; padding: 18px; }
+  section.active { display: block; }
+  h2 { margin-top: 0; font-size: 18px; }
+  h3 { font-size: 15px; margin: 22px 0 8px; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+  label { display: block; margin: 10px 0 4px; font-size: 14px; color: #666; }
+  input[type=text], input[type=password], input[type=number], select, textarea { width: 100%; max-width: 560px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+  textarea { min-height: 110px; }
+  .row { display: flex; gap: 16px; align-items: center; }
+  .row label { margin: 0; }
+  .hint { font-size: 12px; color: #999; margin-top: 4px; }
+  .btn { background: #E8833A; color: #fff; border: none; border-radius: 6px; padding: 9px 18px; cursor: pointer; font-size: 14px; margin-top: 14px; }
+  .btn.secondary { background: #fff; color: #E8833A; border: 1px solid #E8833A; }
+  .btn.danger { background: #c0392b; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; }
+  .card { background: #FFF7E8; border: 1px solid #E8D9C0; border-radius: 8px; padding: 12px 18px; min-width: 120px; }
+  .card b { font-size: 26px; display: block; }
+  .card span { font-size: 13px; color: #888; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 14px; }
+  th, td { border-bottom: 1px solid #eee; padding: 8px 6px; text-align: left; vertical-align: top; }
+  .item { border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+  .item .actions { margin-top: 6px; }
+  .item .actions button { margin-right: 8px; }
+  .muted { color: #999; font-size: 13px; }
+  #msg { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 8px 16px; border-radius: 6px; display: none; font-size: 14px; }
+  .auth-box { max-width: 420px; margin: 60px auto; background: #fff; border: 1px solid #E8D9C0; border-radius: 10px; padding: 24px; }
+  .auth-box h2 { text-align: center; }
+  .privacy { background: #f6f1e7; border: 1px solid #E8D9C0; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #776; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div id="auth-view" style="display:none">
+  <div class="auth-box">
+    <h2 id="auth-title">未来我 · 后台登录</h2>
+    <p id="auth-desc" class="muted">请输入管理员密码。</p>
+    <label>管理员密码</label>
+    <input type="password" id="auth-password" placeholder="至少 6 位" autocomplete="current-password">
+    <button class="btn" id="auth-submit" style="width:100%">登录</button>
+    <p class="hint" id="auth-error" style="color:#c0392b"></p>
+  </div>
+</div>
+
+<div id="app-view" style="display:none">
+  <header>
+    <h1>未来我 · 后台管理</h1>
+    <button id="logout-btn">退出登录</button>
+  </header>
+  <nav id="tabs">
+    <button data-tab="dashboard" class="active">仪表盘</button>
+    <button data-tab="topics">话题与合规</button>
+    <button data-tab="llm">LLM 配置</button>
+    <button data-tab="tts">TTS 配置</button>
+    <button data-tab="membership">会员配置</button>
+    <button data-tab="messages">消息推送</button>
+    <button data-tab="activities">活动管理</button>
+    <button data-tab="daily">每日一句</button>
+  </nav>
+  <main>
+    <section id="tab-dashboard" class="active">
+      <h2>仪表盘</h2>
+      <div class="privacy">隐私说明：后台只展示汇总数字，不查看任何单个用户的内容（愿望、信件、记忆、每日一句原文均不展示）。</div>
+      <div class="cards" id="stat-cards"></div>
+      <h3>今日活跃（去重设备数）</h3>
+      <div class="cards"><div class="card"><b id="stat-dau">–</b><span>今日活跃设备</span></div></div>
+    </section>
+
+    <section id="tab-topics">
+      <h2>话题与合规总览</h2>
+      <h3>愿望话题分布（分类汇总，不含原文）</h3>
+      <table><thead><tr><th>分类</th><th>愿望数</th><th>用户数</th></tr></thead><tbody id="topics-body"></tbody></table>
+      <h3>违规类型统计（近 30 天，仅类型与数量）</h3>
+      <table><thead><tr><th>违规类型</th><th>条数</th></tr></thead><tbody id="violations-body"></tbody></table>
+      <p class="muted">违规检测复用服务端内容过滤规则；后台只存类型和数量，不存原文、不关联具体用户。</p>
+    </section>
+
+    <section id="tab-llm">
+      <h2>LLM 配置（写信）</h2>
+      <p class="muted">密钥只存服务端数据库，不经过 App。留空表示清除；显示为 ******** 表示已配置，不改请勿动。</p>
+      <div id="llm-forms"></div>
+      <label>默认写信供应商</label>
+      <select id="set-llm.default_provider">
+        <option value="qwen">千问</option>
+        <option value="hunyuan">腾讯混元</option>
+        <option value="siliconflow">硅基流动</option>
+        <option value="zhipu">智谱 GLM</option>
+        <option value="generic">通用接口</option>
+      </select>
+      <button class="btn" data-save="llm">保存 LLM 配置</button>
+    </section>
+
+    <section id="tab-tts">
+      <h2>TTS 配置（语音）</h2>
+      <p class="muted">DashScope Key 与千问 LLM 共用，智谱 Key 与 GLM LLM 共用——两边填的是同一处配置。</p>
+      <label>DashScope API Key（Qwen3-TTS）</label>
+      <input type="password" id="set-dashscope.api_key" autocomplete="off">
+      <label>智谱 API Key（GLM-TTS）</label>
+      <input type="password" id="set-zhipu.api_key" autocomplete="off">
+      <label>腾讯云 SecretId（腾讯 TTS）</label>
+      <input type="text" id="set-tencent.secret_id" autocomplete="off">
+      <label>腾讯云 SecretKey（腾讯 TTS）</label>
+      <input type="password" id="set-tencent.secret_key" autocomplete="off">
+      <label>腾讯云地域</label>
+      <input type="text" id="set-tencent.region">
+      <label>默认 TTS 供应商（音色所属供应商优先，其次按此顺序降级）</label>
+      <select id="set-tts.default_provider">
+        <option value="qwen">Qwen3-TTS</option>
+        <option value="zhipu">智谱 GLM-TTS</option>
+        <option value="tencent">腾讯 TTS</option>
+        <option value="edge">Edge TTS（免费）</option>
+      </select>
+      <button class="btn" data-save="tts">保存 TTS 配置</button>
+    </section>
+
+    <section id="tab-membership">
+      <h2>会员配置</h2>
+      <label>试用天数</label>
+      <input type="number" id="set-membership.trial_days" min="0" max="365">
+      <label>月费（元）</label>
+      <input type="number" id="set-membership.price_monthly_cny" min="0" step="0.1">
+      <div class="row" style="margin-top:12px">
+        <input type="checkbox" id="set-membership.paywalled">
+        <label for="set-membership.paywalled">开启付费墙（试用结束后需付费）</label>
+      </div>
+      <p class="hint">第一阶段默认免费（付费墙关闭），会员状态接口会按此配置返回。</p>
+      <button class="btn" data-save="membership">保存会员配置</button>
+    </section>
+
+    <section id="tab-messages">
+      <h2>消息推送（App 打开时拉取）</h2>
+      <div id="messages-list"></div>
+      <h3>新增 / 编辑消息</h3>
+      <input type="hidden" id="msg-id">
+      <label>标题</label><input type="text" id="msg-title">
+      <label>内容</label><textarea id="msg-body"></textarea>
+      <label>目标人群</label>
+      <select id="msg-audience">
+        <option value="all">全部用户</option>
+        <option value="new">新用户</option>
+        <option value="trial">试用中用户</option>
+        <option value="paid">付费用户</option>
+      </select>
+      <div class="row" style="margin-top:10px">
+        <input type="checkbox" id="msg-active" checked>
+        <label for="msg-active">启用</label>
+      </div>
+      <button class="btn" id="msg-save">保存消息</button>
+      <button class="btn secondary" id="msg-clear">清空表单</button>
+    </section>
+
+    <section id="tab-activities">
+      <h2>活动管理</h2>
+      <div id="activities-list"></div>
+      <h3>新增 / 编辑活动</h3>
+      <input type="hidden" id="act-id">
+      <label>活动 ID（新增可留空自动生成）</label><input type="text" id="act-id-input">
+      <label>标题</label><input type="text" id="act-title">
+      <label>内容</label><textarea id="act-body"></textarea>
+      <label>图片链接（可选）</label><input type="text" id="act-image">
+      <div class="row">
+        <div style="flex:1"><label>开始日期</label><input type="text" id="act-start" placeholder="2026-11-19"></div>
+        <div style="flex:1"><label>结束日期</label><input type="text" id="act-end" placeholder="可空"></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <input type="checkbox" id="act-active" checked>
+        <label for="act-active">启用</label>
+      </div>
+      <button class="btn" id="act-save">保存活动</button>
+      <button class="btn secondary" id="act-clear">清空表单</button>
+    </section>
+
+    <section id="tab-daily">
+      <h2>每日一句 · 生成设置</h2>
+      <p class="muted">每日一句由 AI 按每个用户的愿望个性化生成（每天每用户一句，同一天不重复生成）；没有愿望或没有配 LLM Key 时用服务端内置通用鼓励句兜底。后台不管理通用句子内容。</p>
+      <div class="row" style="margin:10px 0">
+        <input type="checkbox" id="set-daily.enabled">
+        <label for="set-daily.enabled">开启 AI 每日一句生成</label>
+      </div>
+      <label>长度上限（字）</label>
+      <input type="number" id="set-daily.max_chars" min="10" max="200">
+      <label>兜底行为（无 LLM / 无愿望时）</label>
+      <select id="set-daily.fallback_mode">
+        <option value="generic">内置通用鼓励句</option>
+        <option value="previous">沿用上一句</option>
+      </select>
+      <label>生成提示词模板（可用占位符 {wish} {days_left} {context} {max_chars}）</label>
+      <textarea id="set-daily.prompt_template" style="min-height:140px"></textarea>
+      <button class="btn" data-save="daily">保存每日一句设置</button>
+    </section>
+  </main>
+</div>
+<div id="msg"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const MASK = "********";
+let SETTINGS = {};
+
+function toast(t) { const m = $("msg"); m.textContent = t; m.style.display = "block"; setTimeout(() => m.style.display = "none", 2500); }
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: "same-origin", headers: { "Content-Type": "application/json" }, ...opts });
+  if (r.status === 401) { showAuth(false); throw new Error("未登录"); }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || ("HTTP " + r.status));
+  return body;
+}
+
+function showAuth(isSetup) {
+  $("auth-view").style.display = "block";
+  $("app-view").style.display = "none";
+  $("auth-title").textContent = isSetup ? "首次使用 · 设置管理员密码" : "未来我 · 后台登录";
+  $("auth-desc").textContent = isSetup ? "还没有管理员密码，请先设置一个（至少 6 位，牢记）。" : "请输入管理员密码。";
+  $("auth-submit").textContent = isSetup ? "设置并进入" : "登录";
+  $("auth-submit").onclick = async () => {
+    const pw = $("auth-password").value;
+    if (pw.length < 6) { $("auth-error").textContent = "密码至少 6 位"; return; }
+    try {
+      await api(isSetup ? "/api/v1/admin/setup" : "/api/v1/admin/login", { method: "POST", body: JSON.stringify({ password: pw }) });
+      $("auth-password").value = "";
+      await enter();
+    } catch (e) { $("auth-error").textContent = e.message; }
+  };
+}
+
+async function enter() {
+  $("auth-view").style.display = "none";
+  $("app-view").style.display = "block";
+  await loadAll();
+}
+
+async function loadAll() {
+  SETTINGS = await api("/api/v1/admin/settings");
+  fillSettings();
+  await loadDashboard();
+  await loadMessages();
+  await loadActivities();
+}
+
+function setVal(id, key, isCheck) {
+  const el = $(id);
+  if (!el) return;
+  const v = SETTINGS[key] ?? "";
+  if (isCheck) el.checked = (v === "1" || v === true);
+  else el.value = v;
+}
+function getVal(id, key, isCheck) {
+  const el = $(id);
+  if (isCheck) return el.checked ? "1" : "0";
+  return el.value;
+}
+
+const LLM_PROVIDERS = [
+  { id: "qwen", name: "千问（DashScope）", key: "dashscope.api_key", model: "llm.qwen.model", note: "Key 与 Qwen3-TTS 共用" },
+  { id: "hunyuan", name: "腾讯混元", key: "hunyuan.api_key", model: "llm.hunyuan.model", note: "" },
+  { id: "siliconflow", name: "硅基流动", key: "siliconflow.api_key", model: "llm.siliconflow.model", note: "" },
+  { id: "zhipu", name: "智谱 GLM", key: "zhipu.api_key", model: "llm.zhipu.model", note: "Key 与 GLM-TTS 共用" },
+  { id: "generic", name: "通用接口", key: "generic.api_key", model: "llm.generic.model", base: "llm.generic.base_url", note: "任意 OpenAI 兼容网关，三个都要填" },
+];
+
+function fillSettings() {
+  // LLM forms
+  const wrap = $("llm-forms");
+  wrap.innerHTML = "";
+  for (const p of LLM_PROVIDERS) {
+    const div = document.createElement("div");
+    div.innerHTML = `<h3>${p.name}</h3>
+      <div class="row"><input type="checkbox" id="en-${p.id}"><label for="en-${p.id}">启用</label></div>
+      <label>API Key</label><input type="password" id="key-${p.id}" autocomplete="off">
+      ${p.base ? `<label>Base URL</label><input type="text" id="base-${p.id}" placeholder="https://.../v1">` : ""}
+      <label>模型</label><input type="text" id="model-${p.id}">
+      ${p.note ? `<p class="hint">${p.note}</p>` : ""}`;
+    wrap.appendChild(div);
+    $("en-" + p.id).checked = (SETTINGS["llm." + p.id + ".enabled"] === "1");
+    $("key-" + p.id).value = SETTINGS[p.key] ?? "";
+    $("model-" + p.id).value = SETTINGS[p.model] ?? "";
+    if (p.base) $("base-" + p.id).value = SETTINGS[p.base] ?? "";
+  }
+  setVal("set-llm.default_provider", "llm.default_provider");
+  setVal("set-dashscope.api_key", "dashscope.api_key");
+  setVal("set-zhipu.api_key", "zhipu.api_key");
+  setVal("set-tencent.secret_id", "tencent.secret_id");
+  setVal("set-tencent.secret_key", "tencent.secret_key");
+  setVal("set-tencent.region", "tencent.region");
+  setVal("set-tts.default_provider", "tts.default_provider");
+  setVal("set-membership.trial_days", "membership.trial_days");
+  setVal("set-membership.price_monthly_cny", "membership.price_monthly_cny");
+  setVal("set-membership.paywalled", "membership.paywalled", true);
+  setVal("set-daily.enabled", "daily.enabled", true);
+  setVal("set-daily.max_chars", "daily.max_chars");
+  setVal("set-daily.fallback_mode", "daily.fallback_mode");
+  setVal("set-daily.prompt_template", "daily.prompt_template");
+}
+
+async function saveSettings(keys) {
+  const vals = {};
+  const grab = (id, key, isCheck) => { vals[key] = getVal(id, key, isCheck); };
+  if (keys.includes("llm")) {
+    for (const p of LLM_PROVIDERS) {
+      vals["llm." + p.id + ".enabled"] = $("en-" + p.id).checked ? "1" : "0";
+      vals[p.key] = $("key-" + p.id).value;
+      vals[p.model] = $("model-" + p.id).value;
+      if (p.base) vals[p.base] = $("base-" + p.id).value;
+    }
+    vals["llm.default_provider"] = $("set-llm.default_provider").value;
+  }
+  if (keys.includes("tts")) {
+    grab("set-dashscope.api_key", "dashscope.api_key");
+    grab("set-zhipu.api_key", "zhipu.api_key");
+    grab("set-tencent.secret_id", "tencent.secret_id");
+    grab("set-tencent.secret_key", "tencent.secret_key");
+    grab("set-tencent.region", "tencent.region");
+    grab("set-tts.default_provider", "tts.default_provider");
+  }
+  if (keys.includes("membership")) {
+    grab("set-membership.trial_days", "membership.trial_days");
+    grab("set-membership.price_monthly_cny", "membership.price_monthly_cny");
+    grab("set-membership.paywalled", "membership.paywalled", true);
+  }
+  if (keys.includes("daily")) {
+    grab("set-daily.enabled", "daily.enabled", true);
+    grab("set-daily.max_chars", "daily.max_chars");
+    grab("set-daily.fallback_mode", "daily.fallback_mode");
+    grab("set-daily.prompt_template", "daily.prompt_template");
+  }
+  try {
+    SETTINGS = await api("/api/v1/admin/settings", { method: "POST", body: JSON.stringify({ settings: vals }) });
+    fillSettings();
+    toast("已保存");
+  } catch (e) { toast("保存失败：" + e.message); }
+}
+
+async function loadDashboard() {
+  const d = await api("/api/v1/admin/dashboard");
+  const cards = [["设备总数", d.devices], ["愿望总数", d.wishes], ["信件总数", d.letters], ["打卡总数", d.checkins]];
+  $("stat-cards").innerHTML = cards.map(([k, v]) => `<div class="card"><b>${v}</b><span>${k}</span></div>`).join("");
+  $("stat-dau").textContent = d.dau_today;
+  $("topics-body").innerHTML = (d.topics || []).map(t =>
+    `<tr><td>${t.category}</td><td>${t.wishes}</td><td>${t.devices}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">暂无数据</td></tr>`;
+  $("violations-body").innerHTML = (d.violations || []).map(v =>
+    `<tr><td>${v.type}</td><td>${v.count}</td></tr>`).join("") || `<tr><td colspan="2" class="muted">近 30 天无违规记录</td></tr>`;
+}
+
+async function loadMessages() {
+  const list = await api("/api/v1/admin/messages");
+  $("messages-list").innerHTML = list.map(m => `<div class="item">
+    <b>${m.title}</b> <span class="muted">${m.audience} · ${m.active ? "启用" : "停用"} · ${m.created_at}</span>
+    <div>${m.body}</div>
+    <div class="actions">
+      <button class="btn secondary" onclick='editMessage(${JSON.stringify(m.id)})'>编辑</button>
+      <button class="btn danger" onclick='delMessage(${JSON.stringify(m.id)})'>删除</button>
+    </div></div>`).join("") || `<p class="muted">暂无消息</p>`;
+  window._messages = list;
+}
+window.editMessage = id => {
+  const m = window._messages.find(x => x.id === id);
+  if (!m) return;
+  $("msg-id").value = m.id; $("msg-title").value = m.title; $("msg-body").value = m.body;
+  $("msg-audience").value = m.audience; $("msg-active").checked = !!m.active;
+};
+window.delMessage = async id => {
+  if (!confirm("确定删除这条消息？")) return;
+  await api("/api/v1/admin/messages/" + encodeURIComponent(id), { method: "DELETE" });
+  await loadMessages(); toast("已删除");
+};
+
+async function loadActivities() {
+  const list = await api("/api/v1/admin/activities");
+  $("activities-list").innerHTML = list.map(a => `<div class="item">
+    <b>${a.title}</b> <span class="muted">${a.id} · ${a.active ? "启用" : "停用"}</span>
+    <div>${a.body}</div>
+    <div class="actions">
+      <button class="btn secondary" onclick='editActivity(${JSON.stringify(a.id)})'>编辑</button>
+      <button class="btn danger" onclick='delActivity(${JSON.stringify(a.id)})'>删除</button>
+    </div></div>`).join("") || `<p class="muted">暂无活动</p>`;
+  window._activities = list;
+}
+window.editActivity = id => {
+  const a = window._activities.find(x => x.id === id);
+  if (!a) return;
+  $("act-id").value = a.id; $("act-id-input").value = a.id; $("act-title").value = a.title;
+  $("act-body").value = a.body; $("act-image").value = a.image_url || "";
+  $("act-start").value = a.start_at || ""; $("act-end").value = a.end_at || "";
+  $("act-active").checked = !!a.active;
+};
+window.delActivity = async id => {
+  if (!confirm("确定删除这个活动？")) return;
+  await api("/api/v1/admin/activities/" + encodeURIComponent(id), { method: "DELETE" });
+  await loadActivities(); toast("已删除");
+};
+
+document.querySelectorAll("#tabs button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("#tabs button").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll("main section").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    $("tab-" + b.dataset.tab).classList.add("active");
+  };
+});
+document.querySelectorAll("[data-save]").forEach(b => {
+  b.onclick = () => saveSettings([b.dataset.save]);
+});
+$("logout-btn").onclick = async () => {
+  await api("/api/v1/admin/logout", { method: "POST" });
+  location.reload();
+};
+$("msg-save").onclick = async () => {
+  const body = { title: $("msg-title").value, body: $("msg-body").value, audience: $("msg-audience").value, active: $("msg-active").checked };
+  const id = $("msg-id").value;
+  try {
+    if (id) await api("/api/v1/admin/messages/" + encodeURIComponent(id), { method: "PUT", body: JSON.stringify(body) });
+    else await api("/api/v1/admin/messages", { method: "POST", body: JSON.stringify(body) });
+    $("msg-id").value = ""; $("msg-title").value = ""; $("msg-body").value = "";
+    await loadMessages(); toast("已保存");
+  } catch (e) { toast("保存失败：" + e.message); }
+};
+$("msg-clear").onclick = () => { $("msg-id").value = ""; $("msg-title").value = ""; $("msg-body").value = ""; };
+$("act-save").onclick = async () => {
+  const body = { id: $("act-id-input").value || null, title: $("act-title").value, body: $("act-body").value,
+    image_url: $("act-image").value || null, start_at: $("act-start").value || null, end_at: $("act-end").value || null, active: $("act-active").checked };
+  const id = $("act-id").value;
+  try {
+    if (id) await api("/api/v1/admin/activities/" + encodeURIComponent(id), { method: "PUT", body: JSON.stringify(body) });
+    else await api("/api/v1/admin/activities", { method: "POST", body: JSON.stringify(body) });
+    $("act-id").value = ""; $("act-id-input").value = ""; $("act-title").value = ""; $("act-body").value = "";
+    $("act-image").value = ""; $("act-start").value = ""; $("act-end").value = "";
+    await loadActivities(); toast("已保存");
+  } catch (e) { toast("保存失败：" + e.message); }
+};
+$("act-clear").onclick = () => { $("act-id").value = ""; $("act-id-input").value = ""; $("act-title").value = ""; $("act-body").value = ""; $("act-image").value = ""; $("act-start").value = ""; $("act-end").value = ""; };
+
+(async () => {
+  try {
+    const s = await api("/api/v1/admin/status");
+    if (!s.password_set) showAuth(true);
+    else if (s.authenticated) await enter();
+    else showAuth(false);
+  } catch (e) { showAuth(false); }
+})();
+</script>
+</body>
+</html>
