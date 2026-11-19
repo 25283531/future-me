@@ -56,7 +56,7 @@
 
 - Web 后台 `http://<服务器IP>:6999/admin`：首次设置管理员密码（scrypt 存库），之后密码登录（HttpOnly Cookie 会话 7 天）。
 - 栏目：仪表盘、话题与合规、LLM 配置（5 家供应商 Key/模型/默认供应商）、TTS 配置、会员配置（试用天数/月费/付费墙）、消息推送 CRUD、活动管理 CRUD、每日一句（仅生成设置：开关、prompt 模板、长度上限、兜底行为）。
-- **所有 API Key 只在后台配**，存在 SQLite 设置表里，不走环境变量，`.env.example` 里不再含 Key。
+- **所有 API Key 只在后台配**，存在 SQLite 设置表里，不走环境变量；部署不需要 .env 文件，`docker-compose.yml` 里已无 `env_file`，服务器设置（HOST/PORT/DATA_DIR）直接写在 yml 的 `environment` 里。
 
 ## 记忆系统（2026-11-19 23:46 用户要求）
 

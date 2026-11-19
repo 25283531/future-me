@@ -149,7 +149,7 @@ docker compose up -d
 bash scripts/smoke.sh
 ```
 
-## 配置（环境变量，见 `.env.example`）
+## 配置（服务器设置，改 `docker-compose.yml` 里的 `environment` 即可；没有 .env 文件）
 
 | 变量 | 必填 | 说明 |
 |---|---|---|

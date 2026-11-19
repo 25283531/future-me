@@ -9,8 +9,6 @@ services:
     volumes:
       # SQLite DB + cached audio persist here (on the router: ./data).
       - ./data:/app/data
-    env_file:
-      - .env
     environment:
       DATA_DIR: /app/data
       PORT: "6999"
