@@ -17,4 +17,4 @@ ENV PORT=6999
 
 EXPOSE 6999
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-6999}"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-6999}"]
