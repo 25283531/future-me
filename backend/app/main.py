@@ -50,6 +50,29 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="未来我 Future Me API", version="0.2.0", lifespan=lifespan)
+
+
+class _ForwardedProtoMiddleware:
+    """Trust X-Forwarded-Proto from the reverse proxy (Lucky) so generated
+    URLs (e.g. audio_url) use https when the public domain is https. Without
+    this the app gets an http:// audio URL it cannot play (cleartext is
+    off). Starlette 1.x no longer ships ProxyHeadersMiddleware, so this is
+    the same 10 lines by hand; the header only matters when a proxy sets it.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            proto = headers.get(b"x-forwarded-proto", b"").decode().strip().lower()
+            if proto in ("http", "https"):
+                scope["scheme"] = proto
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_ForwardedProtoMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

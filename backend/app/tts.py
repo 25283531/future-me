@@ -205,6 +205,17 @@ _PROVIDERS = {
 
 CHAIN_ORDER = ["qwen", "zhipu", "tencent", "edge"]
 
+# Default voice per provider, used when the requested voice belongs to a
+# different provider and the chain falls through to this one. Passing the
+# requested voice's own provider_voice to another provider is wrong (e.g.
+# Edge rejects Qwen's "Cherry" with "Invalid voice 'Cherry'").
+DEFAULT_PROVIDER_VOICE = {
+    "qwen": "Cherry",
+    "zhipu": "tongtong",
+    "tencent": "101001",
+    "edge": "zh-CN-XiaoxiaoNeural",
+}
+
 
 def chain_order() -> list[str]:
     """Fallback order: voice's provider is moved first by the caller; the
@@ -247,8 +258,15 @@ def synthesize(text: str, voice_id: str) -> tuple[Path, str, bool]:
         if not has_key():
             errors.append(f"{provider}: not configured")
             continue
+        # Use this provider's own voice name: the requested voice's
+        # provider_voice only makes sense for its own provider.
+        provider_voice = (
+            voice["provider_voice"]
+            if voice["provider"] == provider
+            else DEFAULT_PROVIDER_VOICE[provider]
+        )
         try:
-            audio = fn(text, voice["provider_voice"])
+            audio = fn(text, provider_voice)
         except Exception as e:  # noqa: BLE001 - fall through the chain
             errors.append(f"{provider}: {e}")
             continue

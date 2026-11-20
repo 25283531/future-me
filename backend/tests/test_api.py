@@ -202,6 +202,32 @@ def test_tts_edge_fallback_and_audio_serving(token):
     assert r2.status_code == 200 and r2.json()["cached"] is True
 
 
+def test_tts_qwen_voice_falls_back_to_edge_with_valid_voice(token):
+    # Regression: with no Qwen key, a qwen voice used to fall through to
+    # Edge with voice "Cherry", which Edge rejects ("Invalid voice
+    # 'Cherry'"). The fallback must use a real Edge voice instead.
+    r = client.post(
+        "/api/v1/tts/synthesize",
+        json={"text": "回声测试，千问音色回落到 Edge。", "voice_id": "qwen-cherry"},
+        headers=_auth(token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["provider"] == "edge"
+
+
+def test_audio_url_uses_forwarded_proto(token):
+    # Regression: behind the Lucky reverse proxy the backend sees plain
+    # http and used to return an http:// audio_url, which the app cannot
+    # play (cleartext is off). X-Forwarded-Proto: https must win.
+    r = client.post(
+        "/api/v1/tts/synthesize",
+        json={"text": "反代协议测试。", "voice_id": "edge-xiaoxiao"},
+        headers={**_auth(token), "X-Forwarded-Proto": "https"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["audio_url"].startswith("https://"), r.json()["audio_url"]
+
+
 def test_membership_and_messages(token):
     r = client.get("/api/v1/membership/status", headers=_auth(token))
     assert r.status_code == 200
