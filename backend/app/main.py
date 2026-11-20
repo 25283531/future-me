@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from . import admin, database
@@ -50,6 +50,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(admin.router)
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    """Root URL has no API of its own — send browsers to the admin console."""
+    return RedirectResponse("/admin", status_code=302)
 
 
 @app.get("/admin", include_in_schema=False)
