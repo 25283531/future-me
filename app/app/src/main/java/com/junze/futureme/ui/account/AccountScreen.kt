@@ -68,7 +68,7 @@ private fun Throwable.userMessage(): String {
     return message ?: "网络异常，请检查网络后重试"
 }
 
-private enum class AuthMode { LOGIN, REGISTER, FORGOT }
+enum class AuthMode { LOGIN, REGISTER, FORGOT }
 
 class AccountViewModel(
     private val repository: FutureMeRepository
