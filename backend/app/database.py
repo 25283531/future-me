@@ -84,9 +84,33 @@ CREATE TABLE IF NOT EXISTS memories (
     device_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     text TEXT NOT NULL,
-    importance INTEGER NOT NULL DEFAULT 1,
+    -- 0.0-1.0 float: how alive this memory is. Recalled memories gain
+    -- importance; long-unrecalled ones decay (see evolution.py).
+    importance REAL NOT NULL DEFAULT 0.5,
+    emotion TEXT,
+    recall_count INTEGER NOT NULL DEFAULT 0,
+    last_recalled_at TEXT,
+    faded INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+-- The "future self" persona, one row per device. `summary` is user
+-- content (encrypted like memories.text); `traits` is a JSON object of
+-- 0.0-1.0 numbers (warmth, pride, ...); `interaction_count` drives the
+-- relationship stage (see evolution.py STAGE_THRESHOLDS).
+CREATE TABLE IF NOT EXISTS persona (
+    device_id TEXT PRIMARY KEY,
+    relationship_stage TEXT NOT NULL DEFAULT '初识',
+    summary TEXT NOT NULL DEFAULT '',
+    traits TEXT NOT NULL DEFAULT '{"warmth": 0.5, "pride": 0.5}',
+    interaction_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- Last consolidation run per device (evolution.py runs at most once a day).
+CREATE TABLE IF NOT EXISTS consolidation_runs (
+    device_id TEXT PRIMARY KEY,
+    last_run_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS daily_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,8 +165,15 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "daily.prompt_template": (
         "你是一位来自未来的“我”。请根据用户的目标和近况，写一句来自“目标实现后的自己”的鼓励话。"
         "要求：第一人称，温暖具体，和目标相关，{max_chars}字以内，不要玄学、不要承诺任何结果、"
-        "不要出现“AI生成”等字样，只写那句话本身。"
+        "不要出现“AI生成”等字样，只写那句话本身。\n\n"
+        "用户背景：\n{context}\n\n"
+        "请以你现在的身份——背景里介绍的那个未来的自己——和你对用户的了解说话，"
+        "可以自然地提到你们之间的默契和共同经历，就像老朋友在说话。"
     ),
+    # Memory evolution (see evolution.py). All three are admin-editable.
+    "memory.evolution_enabled": "1",
+    "memory.reflection_enabled": "1",
+    "memory.consolidation_interval_days": "1",
     "admin.password_hash": "",
 }
 
@@ -174,8 +205,45 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+    _migrate_memory_columns()
+    _migrate_importance_scale()
     _migrate_encryption()
     _seed_content()
+
+
+def _migrate_memory_columns() -> None:
+    """Add the evolution columns to `memories` on databases created before
+    them (CREATE TABLE IF NOT EXISTS never alters an existing table)."""
+    new_cols = {
+        "emotion": "TEXT",
+        "recall_count": "INTEGER NOT NULL DEFAULT 0",
+        "last_recalled_at": "TEXT",
+        "faded": "INTEGER NOT NULL DEFAULT 0",
+    }
+    with connect() as conn:
+        existing = {r["name"] for r in conn.execute("PRAGMA table_info(memories)")}
+        for name, ddl in new_cols.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE memories ADD COLUMN {name} {ddl}")
+
+
+def _migrate_importance_scale() -> None:
+    """v1 stored importance as small ints (1 default, 2 progress, 3 wish).
+    The evolution system uses a 0.0-1.0 float scale: map legacy ints once
+    (3 -> 0.9, 2 -> 0.7, 1 -> 0.5). Only rows stored as INTEGER are
+    touched — a REAL 1.0 (a memory recalled up to the cap) is already on
+    the new scale and must not be demoted. Idempotent."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, importance FROM memories"
+            " WHERE typeof(importance) = 'integer' AND importance >= 1"
+        ).fetchall()
+        for r in rows:
+            v = r["importance"]
+            new = 0.9 if v >= 3 else (0.7 if v == 2 else 0.5)
+            conn.execute(
+                "UPDATE memories SET importance = ? WHERE id = ?", (new, r["id"])
+            )
 
 
 def _migrate_encryption() -> None:
@@ -188,6 +256,7 @@ def _migrate_encryption() -> None:
         ("letters", "id", "text"),
         ("daily_messages", "id", "text"),
         ("memories", "id", "text"),
+        ("persona", "device_id", "summary"),
     ]
     with connect() as conn:
         for table, id_col, text_col in specs:
@@ -479,29 +548,63 @@ def delete_activity(act_id: str) -> bool:
 
 # ---- memories ----
 
-MEMORY_KINDS = {"profile", "preference", "milestone", "progress", "note"}
+# emotion: a hard day pushed through, a proud moment, ... (free-form label,
+# usually one of 开心/低落/坚定/焦虑/自豪). insight: a pattern the future
+# self formed about the user during consolidation (at most one per run).
+MEMORY_KINDS = {
+    "profile", "preference", "milestone", "progress", "note",
+    "emotion", "insight",
+}
+
+MEMORY_COLUMNS = (
+    "id, device_id, kind, text, importance, emotion, recall_count,"
+    " last_recalled_at, faded, created_at, updated_at"
+)
 
 
-def list_memories(device_id: str) -> list[dict]:
+def normalize_importance(value) -> float:
+    """Clamp to the 0.0-1.0 float scale. Legacy v1 callers pass ints
+    (3 -> 0.9, 2 -> 0.7, 1 -> 0.5); new callers pass floats, clamped."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    if isinstance(value, int) and not isinstance(value, bool):
+        return 0.9 if v >= 3 else (0.7 if v == 2 else 0.5)
+    return max(0.1, min(1.0, v))
+
+
+def list_memories(device_id: str, include_faded: bool = False) -> list[dict]:
+    """Live memories, most important first. Faded memories are excluded
+    by default — they are kept in the DB (never hard-deleted) but no
+    longer enter the LLM context."""
+    q = (
+        f"SELECT {MEMORY_COLUMNS} FROM memories WHERE device_id = ?"
+    )
+    if not include_faded:
+        q += " AND faded = 0"
+    q += " ORDER BY importance DESC, created_at DESC"
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT id, device_id, kind, text, importance, created_at, updated_at"
-            " FROM memories WHERE device_id = ?"
-            " ORDER BY importance DESC, created_at DESC",
-            (device_id,),
-        ).fetchall()
+        rows = conn.execute(q, (device_id,)).fetchall()
     return _decrypt_rows([dict(r) for r in rows])
 
 
-def create_memory(device_id: str, kind: str, text: str, importance: int = 1) -> dict:
+def create_memory(
+    device_id: str, kind: str, text: str, importance: float = 0.5,
+    emotion: str | None = None,
+) -> dict:
     if kind not in MEMORY_KINDS:
         raise ValueError(f"unknown memory kind: {kind}")
     now = _now_iso()
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO memories (device_id, kind, text, importance, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (device_id, kind, encrypt_text(text), importance, now, now),
+            "INSERT INTO memories"
+            " (device_id, kind, text, importance, emotion, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                device_id, kind, encrypt_text(text),
+                normalize_importance(importance), emotion, now, now,
+            ),
         )
         row_id = cur.lastrowid
     return get_memory(row_id)
@@ -510,15 +613,15 @@ def create_memory(device_id: str, kind: str, text: str, importance: int = 1) -> 
 def get_memory(row_id: int) -> dict | None:
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, device_id, kind, text, importance, created_at, updated_at"
-            " FROM memories WHERE id = ?",
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE id = ?",
             (row_id,),
         ).fetchone()
     return _decrypt_row(dict(row)) if row else None
 
 
 def update_memory(row_id: int, fields: dict) -> dict | None:
-    allowed = {"kind", "text", "importance"}
+    allowed = {"kind", "text", "importance", "emotion", "recall_count",
+               "last_recalled_at", "faded"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if "kind" in sets and sets["kind"] not in MEMORY_KINDS:
         raise ValueError(f"unknown memory kind: {sets['kind']}")
@@ -526,11 +629,31 @@ def update_memory(row_id: int, fields: dict) -> dict | None:
         return get_memory(row_id)
     if "text" in sets:
         sets["text"] = encrypt_text(sets["text"])
+    if "importance" in sets:
+        sets["importance"] = normalize_importance(sets["importance"])
     sets["updated_at"] = _now_iso()
     sql = "UPDATE memories SET " + ", ".join(f"{k} = ?" for k in sets) + " WHERE id = ?"
     with connect() as conn:
         conn.execute(sql, (*sets.values(), row_id))
     return get_memory(row_id)
+
+
+def touch_memories(device_id: str, memory_ids: list[int]) -> None:
+    """Recall bookkeeping (evolution.py): a memory used in an assembled
+    context gains recall_count + 1, a fresh last_recalled_at and a small
+    importance bump (capped at 1.0). No-op for an empty list."""
+    if not memory_ids:
+        return
+    now = _now_iso()
+    with connect() as conn:
+        for mid in memory_ids:
+            conn.execute(
+                "UPDATE memories SET recall_count = recall_count + 1,"
+                " last_recalled_at = ?,"
+                " importance = MIN(1.0, importance + 0.05),"
+                " updated_at = ? WHERE id = ? AND device_id = ?",
+                (now, now, mid, device_id),
+            )
 
 
 def delete_memory(row_id: int) -> bool:
@@ -546,6 +669,144 @@ def _memory_exists(device_id: str, kind: str, text: str) -> bool:
             (device_id, kind, text),
         ).fetchone()
     return row is not None
+
+
+# ---- persona (the "future self" per device) ----
+
+DEFAULT_TRAITS: dict[str, float] = {"warmth": 0.5, "pride": 0.5}
+
+
+def _decode_persona(row: dict) -> dict:
+    """Decrypt the summary (user content) and parse traits JSON."""
+    row["summary"] = decrypt_or_keep(row.get("summary") or "")
+    try:
+        traits = json.loads(row.get("traits") or "{}")
+        if not isinstance(traits, dict):
+            traits = {}
+    except ValueError:
+        traits = {}
+    merged = dict(DEFAULT_TRAITS)
+    for k, v in traits.items():
+        try:
+            merged[k] = max(0.0, min(1.0, float(v)))
+        except (TypeError, ValueError):
+            continue
+    row["traits"] = merged
+    return row
+
+
+def get_persona(device_id: str) -> dict:
+    """Fetch the persona, creating a fresh one (stage 初识） on first use."""
+    now = _now_iso()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT device_id, relationship_stage, summary, traits,"
+            " interaction_count, created_at, updated_at"
+            " FROM persona WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO persona (device_id, relationship_stage, summary,"
+                " traits, interaction_count, created_at, updated_at)"
+                " VALUES (?, '初识', '', ?, 0, ?, ?)",
+                (device_id, json.dumps(DEFAULT_TRAITS, ensure_ascii=False), now, now),
+            )
+            row = conn.execute(
+                "SELECT device_id, relationship_stage, summary, traits,"
+                " interaction_count, created_at, updated_at"
+                " FROM persona WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+    return _decode_persona(dict(row))
+
+
+def update_persona(device_id: str, fields: dict) -> dict:
+    """Update persona fields. `summary` is encrypted before storage;
+    `traits` is a dict of 0.0-1.0 numbers stored as JSON."""
+    get_persona(device_id)  # ensure the row exists
+    allowed = {"relationship_stage", "summary", "traits", "interaction_count"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return get_persona(device_id)
+    if "summary" in sets:
+        sets["summary"] = encrypt_text(sets["summary"] or "")
+    if "traits" in sets:
+        traits = dict(DEFAULT_TRAITS)
+        traits.update(sets["traits"] or {})
+        sets["traits"] = json.dumps(
+            {k: max(0.0, min(1.0, float(v))) for k, v in traits.items()},
+            ensure_ascii=False,
+        )
+    sets["updated_at"] = _now_iso()
+    sql = "UPDATE persona SET " + ", ".join(f"{k} = ?" for k in sets) + " WHERE device_id = ?"
+    with connect() as conn:
+        conn.execute(sql, (*sets.values(), device_id))
+    return get_persona(device_id)
+
+
+# ---- consolidation runs (at most once per device per interval) ----
+
+def get_consolidation_last_run(device_id: str) -> str | None:
+    """Last consolidation time ('YYYY-MM-DD HH:MM:SS' UTC) or None."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT last_run_at FROM consolidation_runs WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+    return row["last_run_at"] if row else None
+
+
+def set_consolidation_last_run(device_id: str, when: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO consolidation_runs (device_id, last_run_at) VALUES (?, ?)"
+            " ON CONFLICT(device_id) DO UPDATE SET last_run_at = excluded.last_run_at",
+            (device_id, when),
+        )
+
+
+def events_since(device_id: str, since: str | None) -> dict:
+    """Raw recent events for consolidation (decrypted in memory only):
+    wishes, letters (first 60 chars), daily sentences and check-in count
+    since `since` ('YYYY-MM-DD HH:MM:SS' UTC, None = everything).
+    Used to build the consolidation prompt — never returned by any API."""
+    since = since or "0000-00-00 00:00:00"
+    with connect() as conn:
+        wishes = [
+            dict(r) for r in conn.execute(
+                "SELECT id, text, category, days, created_at FROM wishes"
+                " WHERE device_id = ? AND created_at >= ? ORDER BY id",
+                (device_id, since),
+            ).fetchall()
+        ]
+        letters = [
+            dict(r) for r in conn.execute(
+                "SELECT id, wish_id, text, created_at FROM letters"
+                " WHERE device_id = ? AND created_at >= ? ORDER BY id",
+                (device_id, since),
+            ).fetchall()
+        ]
+        daily = [
+            dict(r) for r in conn.execute(
+                "SELECT id, wish_id, date, text, created_at FROM daily_messages"
+                " WHERE device_id = ? AND created_at >= ? ORDER BY date",
+                (device_id, since),
+            ).fetchall()
+        ]
+        checkins = conn.execute(
+            "SELECT COUNT(*) FROM checkins WHERE device_id = ? AND checkin_date >= ?",
+            (device_id, since[:10]),
+        ).fetchone()[0]
+    letters = _decrypt_rows(letters)
+    for r in letters:
+        r["text"] = (r["text"] or "")[:60]
+    return {
+        "wishes": _decrypt_rows(wishes),
+        "letters": letters,
+        "daily": _decrypt_rows(daily),
+        "checkins": checkins,
+    }
 
 
 # ---- daily messages (personalized, one per device per day) ----
@@ -713,7 +974,7 @@ def create_wish(device_id: str, text: str, category: str, days: int) -> dict:
     target = (date.today() + timedelta(days=days)).isoformat()
     mem_text = f"愿望：{text}（{category}），目标 {days} 天，目标日 {target}"
     if not _memory_exists(device_id, "milestone", mem_text):
-        create_memory(device_id, "milestone", mem_text, importance=3)
+        create_memory(device_id, "milestone", mem_text, importance=0.9)
     # Compliance counting only: record violation TYPE counts, never the
     # text and never the device. The wish itself is still accepted.
     from .content_filter import classify_violation
@@ -809,7 +1070,10 @@ def checkin_today(device_id: str) -> None:
     if streak > 0 and streak % 7 == 0:
         mem_text = f"连续打卡 {streak} 天"
         if not _memory_exists(device_id, "progress", mem_text):
-            create_memory(device_id, "progress", mem_text, importance=2)
+            # A streak milestone is a proud moment — an emotion memory too.
+            create_memory(
+                device_id, "progress", mem_text, importance=0.7, emotion="自豪",
+            )
 
 
 def checkin_status(device_id: str) -> dict:

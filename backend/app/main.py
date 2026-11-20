@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import admin, database
+from . import admin, database, evolution
 from .auth import get_current_device, issue_token
 from .catalog import VOICES, public_voice
 from .config import settings
@@ -125,7 +125,9 @@ def create_wish(body: WishIn, device_id: str = Depends(get_current_device)):
         raise HTTPException(
             status_code=400, detail=f"days must be one of {ALLOWED_DAYS}"
         )
-    return database.create_wish(device_id, body.text.strip(), body.category, body.days)
+    wish = database.create_wish(device_id, body.text.strip(), body.category, body.days)
+    evolution.after_interaction(device_id, event="wish")
+    return wish
 
 
 @app.get("/api/v1/wishes")
@@ -168,6 +170,7 @@ def generate_letter(body: LetterGenerateIn, device_id: str = Depends(get_current
         device_id, wish["id"], body.voice_id, text, target.isoformat()
     )
     letter["ai_generated"] = True  # app must label letters as AI-generated
+    evolution.after_interaction(device_id, event="letter")
     return letter
 
 
@@ -234,7 +237,11 @@ def get_daily_sentence(device_id: str = Depends(get_current_device)):
 @app.post("/api/v1/checkin")
 def checkin(device_id: str = Depends(get_current_device)):
     database.checkin_today(device_id)
-    return database.checkin_status(device_id)
+    status = database.checkin_status(device_id)
+    evolution.after_interaction(
+        device_id, event="checkin", streak=status["streak_days"]
+    )
+    return status
 
 
 @app.get("/api/v1/checkin/status")

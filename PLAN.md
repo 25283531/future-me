@@ -58,11 +58,15 @@
 - 栏目：仪表盘、话题与合规、LLM 配置（5 家供应商 Key/模型/默认供应商）、TTS 配置、会员配置（试用天数/月费/付费墙）、消息推送 CRUD、活动管理 CRUD、每日一句（仅生成设置：开关、prompt 模板、长度上限、兜底行为）。
 - **所有 API Key 只在后台配**，存在 SQLite 设置表里，不走环境变量；部署不需要 .env 文件，`docker-compose.yml` 里已无 `env_file`，服务器设置（HOST/PORT/DATA_DIR）直接写在 yml 的 `environment` 里。
 
-## 记忆系统（2026-11-19 23:46 用户要求）
+## 记忆系统（2026-11-19 23:46 用户要求；2026-11-20 12:33 用户要求拟人化、可自己演变）
 
-- `memories` 表（device_id, kind: profile|preference|milestone|progress|note, text, importance, created_at, updated_at）+ `daily_messages` 表。
-- 愿望本身记为 milestone 记忆（内容+目标日）；连续打卡 7 天自动记一条 progress 记忆。
-- 上下文组装（`backend/app/context.py`）：进行中愿望、打卡连续天数与近期打卡、最近几封信、最近 7 天每日一句、记忆事实（按重要度/时间排序）。写信和每日一句生成都用这套上下文。
+- 自研，无开源记忆项目、无 Mem0/向量库/embedding，全部 SQLite + 规则 + 每天最多一次 LLM 整合。
+- `memories` 表（device_id, kind: profile|preference|milestone|progress|note|emotion|insight, text, importance 0.0–1.0, emotion, recall_count, last_recalled_at, faded, created_at, updated_at）+ `daily_messages` 表 + `persona` 表（device_id, relationship_stage, summary, traits JSON, interaction_count）。
+- 愿望本身记为 milestone 记忆（内容+目标日）；连续打卡 7 天自动记一条 progress 记忆（emotion=自豪）。
+- 人格状态（`persona`）：关系阶段按互动次数进阶 初识（1）→ 熟悉（7）→ 默契（30）→ 知己（90）；summary 是一段第一人称介绍（“我是三年后的你，我记得你……”），由每日整合重写；traits（warmth/pride 0–1）由事件推动（打卡里程碑涨 pride，低落情绪记忆涨 warmth）。
+- 自我演变（`backend/app/evolution.py`）：回忆强化（记忆进入上下文时 recall_count+1、importance+0.05，上限 1.0）；遗忘（30 天未回忆起每天 -0.02，下限 0.1；importance < 0.15 且超过 60 天则 faded=1，不再进上下文，数据不删）；每日整合（每设备每天最多一次：去重、遗忘、LLM 提炼新记忆、最多一条 insight 感悟、重写 persona summary；无 LLM Key 时只做规则处理，不失败）。
+- 上下文组装（`backend/app/context.py`）：先是人格介绍（summary + 关系阶段 + traits），再是进行中愿望、打卡、最近几封信、最近 7 天每日一句、记忆事实（按演变后的重要度排序，排除 faded）、最新一条感悟。写信和每日一句生成都用这套上下文；每日一句提示词模板默认包含 {context}，让未来的自己以现在的身份说话。
+- 后台“记忆演变”栏目：演变总开关、反思感悟开关、整合间隔（1–7 天），默认全开；后台不查看任何单个用户的记忆/人格内容。
 
 ## 隐私红线（2026-11-19 23:49 用户明确，最高优先级）
 
@@ -71,7 +75,7 @@
 
 ## 加密存储（2026-11-19 23:51 用户要求）
 
-- 用户内容与 AI 答复写入 SQLite 前用 Fernet 加密（`cryptography` 库，`backend/app/crypto.py`）：加密字段 wishes.text、letters.text、daily_messages.text、memories.text；只保留运营必需的元数据明文（分类、日期、数量、device_id、违规标记）。
+- 用户内容与 AI 答复写入 SQLite 前用 Fernet 加密（`cryptography` 库，`backend/app/crypto.py`）：加密字段 wishes.text、letters.text、daily_messages.text、memories.text、persona.summary；只保留运营必需的元数据明文（分类、日期、数量、device_id、违规标记）。
 - 密钥文件 `DATA_DIR/.encryption.key`（0600），首次启动自动生成，与数据库分开存放；密钥绝不进数据库、不打日志、不走任何 API。**密钥丢了数据永久无法恢复，要单独备份。**
 - 解密边界：服务端只在内存里解密，且只为 (a) 回传给内容所属用户自己的 App，(b) 生成该用户的 AI 内容时组装上下文。后台接口永远不返回解密后的用户内容。
 - 启动时自动迁移表中还是明文的旧行。

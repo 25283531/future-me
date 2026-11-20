@@ -17,7 +17,7 @@ code and never admin-managed.
 """
 from datetime import date
 
-from . import database
+from . import database, evolution
 from .catalog import daily_sentence as fallback_sentence
 from .context import build_user_context, in_progress_wishes
 from .llm import LLMError, LLMNotConfigured, generate_daily_sentence
@@ -53,6 +53,14 @@ def _fallback(device_id: str, today: str) -> dict:
 
 
 def get_daily_sentence_for_device(device_id: str) -> dict:
+    """Public entry: generate (or return the cached) sentence, then record
+    the interaction so the persona grows and consolidation runs when due."""
+    result = _get_daily_sentence(device_id)
+    evolution.after_interaction(device_id, event="daily")
+    return result
+
+
+def _get_daily_sentence(device_id: str) -> dict:
     today = date.today().isoformat()
 
     # 1. Same-day cache: never generate twice.

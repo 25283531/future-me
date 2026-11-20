@@ -69,6 +69,7 @@
     <button data-tab="messages">消息推送</button>
     <button data-tab="activities">活动管理</button>
     <button data-tab="daily">每日一句</button>
+    <button data-tab="memory">记忆演变</button>
   </nav>
   <main>
     <section id="tab-dashboard" class="active">
@@ -201,6 +202,23 @@
       <textarea id="set-daily.prompt_template" style="min-height:140px"></textarea>
       <button class="btn" data-save="daily">保存每日一句设置</button>
     </section>
+
+    <section id="tab-memory">
+      <h2>记忆演变 · 设置</h2>
+      <div class="privacy">记忆系统是拟人化、会自己演变的：未来的自己和用户的关系会从初识 → 熟悉 → 默契 → 知己逐步加深；常被想起的记忆会变强，长期没想起的会慢慢淡忘；每天最多整合一次，把最近的事提炼成持久记忆，并可能形成一条感悟。后台只管理这些开关，不查看任何单个用户的记忆内容。</div>
+      <div class="row" style="margin:10px 0">
+        <input type="checkbox" id="set-memory.evolution_enabled">
+        <label for="set-memory.evolution_enabled">开启记忆演变（关系进阶 / 回忆强化 / 遗忘 / 每日整合）</label>
+      </div>
+      <div class="row" style="margin:10px 0">
+        <input type="checkbox" id="set-memory.reflection_enabled">
+        <label for="set-memory.reflection_enabled">开启反思感悟（整合时最多形成一条“感悟”记忆）</label>
+      </div>
+      <label>整合间隔（天，每天最多整合一次，1–7）</label>
+      <input type="number" id="set-memory.consolidation_interval_days" min="1" max="7">
+      <p class="hint">没有配 LLM Key 时，整合只做规则处理（去重、遗忘、打卡里程碑、按规则刷新人格介绍），不会失败。</p>
+      <button class="btn" data-save="memory">保存记忆演变设置</button>
+    </section>
   </main>
 </div>
 <div id="msg"></div>
@@ -303,6 +321,9 @@ function fillSettings() {
   setVal("set-daily.max_chars", "daily.max_chars");
   setVal("set-daily.fallback_mode", "daily.fallback_mode");
   setVal("set-daily.prompt_template", "daily.prompt_template");
+  setVal("set-memory.evolution_enabled", "memory.evolution_enabled", true);
+  setVal("set-memory.reflection_enabled", "memory.reflection_enabled", true);
+  setVal("set-memory.consolidation_interval_days", "memory.consolidation_interval_days");
 }
 
 async function saveSettings(keys) {
@@ -335,6 +356,11 @@ async function saveSettings(keys) {
     grab("set-daily.max_chars", "daily.max_chars");
     grab("set-daily.fallback_mode", "daily.fallback_mode");
     grab("set-daily.prompt_template", "daily.prompt_template");
+  }
+  if (keys.includes("memory")) {
+    grab("set-memory.evolution_enabled", "memory.evolution_enabled", true);
+    grab("set-memory.reflection_enabled", "memory.reflection_enabled", true);
+    grab("set-memory.consolidation_interval_days", "memory.consolidation_interval_days");
   }
   try {
     SETTINGS = await api("/api/v1/admin/settings", { method: "POST", body: JSON.stringify({ settings: vals }) });

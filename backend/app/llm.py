@@ -161,6 +161,48 @@ def _pick_provider(provider: str | None = None) -> str:
     return default if default in configured else configured[0]
 
 
+def chat_complete(
+    system: str, user: str, max_tokens: int = 500, temperature: float = 0.7,
+) -> str:
+    """One raw chat completion via the default (or first configured)
+    provider. Used by the memory-evolution module (consolidation /
+    reflection) — unlike the letter/daily helpers it applies no
+    product-specific prompt or output filter; the caller validates the
+    result. Raises LLMNotConfigured / LLMError like the other helpers."""
+    provider_id = _pick_provider()
+    cfg = _provider_config(provider_id)
+    url = f"{cfg['base_url'].rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {cfg['api_key']}",
+        "Content-Type": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=60.0, trust_env=False) as client:
+            resp = client.post(
+                url,
+                headers=headers,
+                json={
+                    "model": cfg["model"],
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+    except httpx.HTTPError as e:
+        raise LLMError(f"{provider_id} request failed: {e}") from e
+    if resp.status_code != 200:
+        raise LLMError(
+            f"{provider_id} API returned HTTP {resp.status_code}: {resp.text[:300]}"
+        )
+    try:
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, ValueError) as e:
+        raise LLMError(f"unexpected {provider_id} response: {resp.text[:300]}") from e
+
+
 def generate_daily_sentence(
     context_text: str, wish_text: str | None, days_left: int | None,
     max_chars: int, template: str,

@@ -168,8 +168,17 @@ def _validate_settings(values: dict) -> dict[str, str]:
             if val not in TTS_PROVIDERS:
                 raise HTTPException(status_code=400, detail=f"unknown TTS provider: {val}")
             cleaned[key] = val
-        elif key in ("membership.paywalled", "daily.enabled") or key.endswith(".enabled"):
+        elif key in ("membership.paywalled", "daily.enabled",
+                     "memory.evolution_enabled", "memory.reflection_enabled") or key.endswith(".enabled"):
             cleaned[key] = "1" if raw in (True, 1, "1", "true", "on") else "0"
+        elif key == "memory.consolidation_interval_days":
+            try:
+                n = int(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="consolidation interval must be an integer")
+            if not 1 <= n <= 7:
+                raise HTTPException(status_code=400, detail="consolidation interval must be 1-7 days")
+            cleaned[key] = str(n)
         elif key == "membership.trial_days":
             try:
                 n = int(raw)

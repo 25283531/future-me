@@ -569,6 +569,259 @@ def test_admin_never_returns_user_text():
     assert any(t["category"] == "脱单恋爱" and t["wishes"] >= 1 for t in dash["topics"])
 
 
+# ---------- personified, self-evolving memory ----------
+
+def test_persona_stage_advances_with_interactions():
+    from app import evolution
+
+    device_id = "persona-device-001"
+    database.get_or_create_device(device_id)
+    p = database.get_persona(device_id)
+    assert p["relationship_stage"] == "初识"
+    assert p["interaction_count"] == 0
+    assert p["traits"]["warmth"] == 0.5 and p["traits"]["pride"] == 0.5
+
+    for _ in range(6):
+        p = evolution.record_interaction(device_id, event="checkin")
+    assert p["interaction_count"] == 6 and p["relationship_stage"] == "初识"
+    p = evolution.record_interaction(device_id, event="checkin")
+    assert p["interaction_count"] == 7 and p["relationship_stage"] == "熟悉"
+    for _ in range(23):
+        p = evolution.record_interaction(device_id)
+    assert p["interaction_count"] == 30 and p["relationship_stage"] == "默契"
+    for _ in range(60):
+        p = evolution.record_interaction(device_id)
+    assert p["interaction_count"] == 90 and p["relationship_stage"] == "知己"
+
+    assert evolution.stage_for(0) == "初识"
+    assert evolution.stage_for(1) == "初识"
+    assert evolution.stage_for(7) == "熟悉"
+    assert evolution.stage_for(89) == "默契"
+    assert evolution.stage_for(90) == "知己"
+
+    # streak milestones make the future self prouder (capped at 1.0)
+    assert p["traits"]["pride"] >= 0.5
+
+
+def test_recall_strengthens_memory():
+    tok = _new_device_token("recall-device-001")
+    marker = "RECALL-MARKER-2a9f-记忆"
+    r = client.post(
+        "/api/v1/wishes",
+        json={"text": marker + "：90天后升职", "category": "事业升职/换工作", "days": 90},
+        headers=_auth(tok),
+    )
+    assert r.status_code == 201, r.text
+    device_id = "recall-device-001"
+    mems = database.list_memories(device_id)
+    assert mems
+    mem = mems[0]
+    assert mem["recall_count"] == 0
+    before = mem["importance"]
+
+    from app.context import build_user_context
+
+    ctx = build_user_context(device_id)
+    assert marker in ctx
+    after = database.get_memory(mem["id"])
+    assert after["recall_count"] == 1
+    assert after["last_recalled_at"]
+    assert after["importance"] > before
+
+
+def test_fading_marks_old_unrecalled_memory_faded():
+    from app import evolution
+    from app.crypto import encrypt_text
+
+    device_id = "fade-device-001"
+    database.get_or_create_device(device_id)
+    old = (date.today() - timedelta(days=70)).isoformat()
+    recent = (date.today() - timedelta(days=40)).isoformat()
+    conn = sqlite3.connect(str(database.settings.DB_PATH))
+    # old + faint + never recalled -> fades out
+    conn.execute(
+        "INSERT INTO memories (device_id, kind, text, importance, emotion,"
+        " recall_count, last_recalled_at, faded, created_at, updated_at)"
+        " VALUES (?, 'note', ?, 0.12, NULL, 0, NULL, 0, ?, ?)",
+        (device_id, encrypt_text("FADE-MARKER-4c1d-旧记忆"),
+         old + "T00:00:00+00:00", old + "T00:00:00+00:00"),
+    )
+    # idle 40 days: decays but stays live (age < 60d, importance stays > 0.15)
+    conn.execute(
+        "INSERT INTO memories (device_id, kind, text, importance, emotion,"
+        " recall_count, last_recalled_at, faded, created_at, updated_at)"
+        " VALUES (?, 'note', ?, 0.9, NULL, 0, ?, 0, ?, ?)",
+        (device_id, encrypt_text("FADE-KEEP-8b2e-较新的记忆"), recent + "T00:00:00+00:00",
+         recent + "T00:00:00+00:00", recent + "T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    result = evolution.apply_fading(device_id)
+    assert result["faded"] == 1 and result["decayed"] == 2
+
+    faded = [m for m in database.list_memories(device_id, include_faded=True)
+             if "FADE-MARKER-4c1d" in m["text"]]
+    assert len(faded) == 1 and faded[0]["faded"] == 1
+    # faded memories are excluded from the live list
+    assert not any("FADE-MARKER-4c1d" in m["text"]
+                   for m in database.list_memories(device_id))
+
+    kept = [m for m in database.list_memories(device_id)
+            if "FADE-KEEP-8b2e" in m["text"]]
+    assert len(kept) == 1 and kept[0]["faded"] == 0
+    # 0.9 - 0.02 * (40 - 30) = 0.7 (checked BEFORE building context, which
+    # would recall-bump the kept memory to 0.75)
+    assert abs(kept[0]["importance"] - 0.7) < 1e-9
+
+    # ... and from the assembled context as well
+    from app.context import build_user_context
+
+    assert "FADE-MARKER-4c1d" not in build_user_context(device_id)
+
+
+def test_consolidation_dedupes_and_writes_insight():
+    from app import evolution
+
+    device_id = "consolidate-device-001"
+    tok = _new_device_token(device_id)
+    r = client.post(
+        "/api/v1/wishes",
+        json={"text": "30天后学会做一道新菜", "category": "家庭亲子", "days": 30},
+        headers=_auth(tok),
+    )
+    assert r.status_code == 201, r.text
+    # duplicates AFTER the wish: the wish already triggered a (rule-based)
+    # consolidation, which would have deduped them already
+    database.create_memory(device_id, "note", "DUP-MARKER-7e3a-重复记忆", importance=0.6)
+    database.create_memory(device_id, "note", "DUP-MARKER-7e3a-重复记忆", importance=0.8)
+    # reset the last run so the forced run sees the wish as a new event
+    database.set_consolidation_last_run(device_id, "2000-01-01 00:00:00")
+
+    fake = {
+        "memories": [
+            {"kind": "insight", "text": "INSIGHT-MARKER-1b5c-我发现你每次遇到困难都会先给自己打气", "importance": 0.8},
+            {"kind": "note", "text": "CONSOL-MARKER-8d2e-新记忆", "importance": 0.6},
+            {"kind": "insight", "text": "第二条感悟不应该写入", "importance": 0.7},
+        ],
+        "persona_summary": "PERSONA-MARKER-3f9a-我是未来的你，我记得你的坚持。",
+    }
+    with patch("app.evolution.chat_complete",
+               return_value=json.dumps(fake, ensure_ascii=False)):
+        result = evolution.run_consolidation(device_id, force=True)
+    assert result["status"] == "done", result
+    assert result["deduped"] == 1
+    assert result["insight"] is True
+    assert result["memories_added"] == 2  # insight + note; 2nd insight dropped
+    mems = database.list_memories(device_id)
+    assert sum(1 for m in mems if m["text"] == "DUP-MARKER-7e3a-重复记忆") == 1
+    assert any(m["kind"] == "insight" and "INSIGHT-MARKER-1b5c" in m["text"] for m in mems)
+    assert not any("第二条感悟" in m["text"] for m in mems)
+    persona = database.get_persona(device_id)
+    assert "PERSONA-MARKER-3f9a" in persona["summary"]
+    # second run the same day is skipped
+    assert evolution.run_consolidation(device_id)["status"] == "skipped"
+
+
+def test_context_includes_persona_summary_and_insight():
+    device_id = "context-persona-device-001"
+    _new_device_token(device_id)
+    database.update_persona(
+        device_id, {"summary": "CTX-PERSONA-6a2d-我是三年后的你，我记得你每天的坚持。"}
+    )
+    database.create_memory(
+        device_id, "insight", "CTX-INSIGHT-9e4b-你总能在低谷里找到继续的理由",
+        importance=0.8,
+    )
+    from app.context import build_user_context, build_user_context_dict
+
+    ctx = build_user_context(device_id)
+    assert "CTX-PERSONA-6a2d" in ctx
+    assert "初识" in ctx
+    assert "CTX-INSIGHT-9e4b" in ctx
+    assert "最新感悟" in ctx
+    d = build_user_context_dict(device_id)
+    assert d["persona"]["stage"] == "初识"
+    assert d["insight"] is not None and "CTX-INSIGHT-9e4b" in d["insight"]["text"]
+
+
+def test_evolution_off_disables_consolidation_and_reflection():
+    from app import evolution
+
+    c = TestClient(app)
+    c.post("/api/v1/admin/login", json={"password": ADMIN_PASSWORD})
+    device_id = "evo-off-device-001"
+    tok = _new_device_token(device_id)
+
+    c.post("/api/v1/admin/settings",
+           json={"settings": {"memory.evolution_enabled": "0"}})
+    assert evolution.run_consolidation(device_id, force=True)["status"] == "disabled"
+
+    c.post("/api/v1/admin/settings", json={"settings": {
+        "memory.evolution_enabled": "1",
+        "memory.reflection_enabled": "0",
+    }})
+    database.create_memory(device_id, "note", "EVOOFF-DUP-5c7d-重复", importance=0.6)
+    database.create_memory(device_id, "note", "EVOOFF-DUP-5c7d-重复", importance=0.6)
+    r = client.post(
+        "/api/v1/wishes",
+        json={"text": "30天后学会做一道新菜", "category": "家庭亲子", "days": 30},
+        headers=_auth(tok),
+    )
+    assert r.status_code == 201, r.text
+    database.set_consolidation_last_run(device_id, "2000-01-01 00:00:00")
+    fake = {"memories": [
+        {"kind": "insight", "text": "EVOOFF-INSIGHT-不该出现", "importance": 0.8},
+        {"kind": "note", "text": "EVOOFF-NOTE-应该出现", "importance": 0.6},
+    ], "persona_summary": "EVOOFF-PERSONA-总结"}
+    with patch("app.evolution.chat_complete",
+               return_value=json.dumps(fake, ensure_ascii=False)):
+        result = evolution.run_consolidation(device_id, force=True)
+    assert result["status"] == "done", result
+    assert result["insight"] is False
+    mems = database.list_memories(device_id)
+    assert not any("EVOOFF-INSIGHT" in m["text"] for m in mems)
+    assert any("EVOOFF-NOTE-应该出现" in m["text"] for m in mems)
+    # restore defaults
+    c.post("/api/v1/admin/settings", json={"settings": {
+        "memory.evolution_enabled": "1",
+        "memory.reflection_enabled": "1",
+    }})
+
+
+def test_persona_summary_stored_encrypted():
+    device_id = "persona-encrypt-device-001"
+    database.get_or_create_device(device_id)
+    marker = "PERSONA-ENC-4f8e-加密的人格介绍"
+    database.update_persona(device_id, {"summary": marker})
+    conn = sqlite3.connect(str(database.settings.DB_PATH))
+    raw = conn.execute(
+        "SELECT summary FROM persona WHERE device_id = ?", (device_id,)
+    ).fetchone()
+    conn.close()
+    assert raw is not None and "PERSONA-ENC-4f8e" not in raw[0]
+    assert database.get_persona(device_id)["summary"] == marker
+
+
+def test_admin_memory_settings():
+    c = TestClient(app)
+    c.post("/api/v1/admin/login", json={"password": ADMIN_PASSWORD})
+    r = c.get("/api/v1/admin/settings")
+    assert r.status_code == 200
+    assert r.json()["memory.evolution_enabled"] == "1"
+    assert r.json()["memory.reflection_enabled"] == "1"
+    assert r.json()["memory.consolidation_interval_days"] == "1"
+    r = c.post("/api/v1/admin/settings",
+               json={"settings": {"memory.consolidation_interval_days": "3"}})
+    assert r.status_code == 200
+    assert database.get_setting("memory.consolidation_interval_days") == "3"
+    r = c.post("/api/v1/admin/settings",
+               json={"settings": {"memory.consolidation_interval_days": "9"}})
+    assert r.status_code == 400
+    c.post("/api/v1/admin/settings",
+           json={"settings": {"memory.consolidation_interval_days": "1"}})
+
+
 def test_decrypt_export_tool():
     db_path = database.settings.DB_PATH
     key_path = Path(database.settings.DATA_DIR) / ".encryption.key"

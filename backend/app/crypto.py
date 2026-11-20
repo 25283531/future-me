@@ -14,9 +14,10 @@ Key management:
   — back the key file up separately from the database.
 
 Only these fields are encrypted: wishes.text, letters.text,
-daily_messages.text, memories.text. Operational metadata stays plaintext
-(category, dates, counts, device_id, violation flags) because the admin
-aggregate statistics are computed from it.
+daily_messages.text, memories.text, persona.summary. Operational metadata
+stays plaintext (category, dates, counts, device_id, violation flags,
+memory emotion/recall counts, relationship stage, traits) because the
+admin aggregate statistics are computed from it.
 """
 import os
 from pathlib import Path
