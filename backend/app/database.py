@@ -129,6 +129,43 @@ CREATE TABLE IF NOT EXISTS violation_stats (
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (date, type)
 );
+-- Registered accounts (email registration). Passwords and one-time codes
+-- are stored as scrypt hashes only, never plaintext. Email is stored in
+-- clear text because login looks it up (it is an identifier, not content);
+-- the privacy policy says so. email_verified gates password change and
+-- password recovery, but NOT app use: unverified users can log in and
+-- use everything.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    email_verified INTEGER NOT NULL DEFAULT 0,
+    verification_code_hash TEXT,
+    verification_code_expires_at TEXT,
+    verification_attempts INTEGER NOT NULL DEFAULT 0,
+    reset_code_hash TEXT,
+    reset_code_expires_at TEXT,
+    reset_attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT
+);
+-- Rate-limit counters (fixed windows, survive restarts). scope is e.g.
+-- "register:ip:1.2.3.4" or "login:email:a@b.c"; window_start is the epoch
+-- second the window started.
+CREATE TABLE IF NOT EXISTS rate_limits (
+    scope TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, window_start)
+);
+-- Image-captcha challenges (registration anti-bot). The code is stored as
+-- a sha256 hash, single-use, 10-minute expiry.
+CREATE TABLE IF NOT EXISTS captcha_challenges (
+    id TEXT PRIMARY KEY,
+    code_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Default values for every setting key. Secrets default to "" (unconfigured).
@@ -174,6 +211,19 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "memory.evolution_enabled": "1",
     "memory.reflection_enabled": "1",
     "memory.consolidation_interval_days": "1",
+    # SMTP (verification / password-reset emails). Edited in the admin
+    # console; the password is a secret like the API keys. When SMTP is
+    # not configured, registration and login still work — verification
+    # emails simply cannot be sent (see mail.py).
+    # Default: 阿里企业邮箱 (user decision 2026-11-20): smtp.qiye.aliyun.com
+    # on port 465 with implicit SSL. Aliyun enterprise mail does NOT
+    # offer port 587 / STARTTLS — never switch these defaults to 587.
+    "smtp.host": "smtp.qiye.aliyun.com",
+    "smtp.port": "465",
+    "smtp.security": "ssl",
+    "smtp.username": "",
+    "smtp.password": "",
+    "smtp.from_address": "",
     "admin.password_hash": "",
 }
 
@@ -186,6 +236,7 @@ SECRET_SETTINGS = {
     "generic.api_key",
     "tencent.secret_id",
     "tencent.secret_key",
+    "smtp.password",
 }
 
 # Keys that must never leave the server at all (not even masked).
@@ -205,10 +256,20 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+    _migrate_devices_user_id()
     _migrate_memory_columns()
     _migrate_importance_scale()
     _migrate_encryption()
     _seed_content()
+
+
+def _migrate_devices_user_id() -> None:
+    """Devices created before accounts existed have no user_id column;
+    add it (nullable: anonymous devices stay unlinked)."""
+    with connect() as conn:
+        existing = {r["name"] for r in conn.execute("PRAGMA table_info(devices)")}
+        if "user_id" not in existing:
+            conn.execute("ALTER TABLE devices ADD COLUMN user_id INTEGER")
 
 
 def _migrate_memory_columns() -> None:
@@ -952,6 +1013,172 @@ def get_or_create_device(device_id: str) -> dict:
             (device_id, now),
         )
         return {"device_id": device_id, "created_at": now}
+
+
+# ---- accounts (email registration) ----
+
+USER_COLUMNS = (
+    "id, email, password_hash, email_verified,"
+    " verification_code_hash, verification_code_expires_at, verification_attempts,"
+    " reset_code_hash, reset_code_expires_at, reset_attempts,"
+    " created_at, last_login_at"
+)
+
+
+def create_user(email: str, password_hash: str) -> dict:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
+            (email, password_hash, _today()),
+        )
+        user_id = cur.lastrowid
+    return get_user(user_id)
+
+
+def get_user(user_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT {USER_COLUMNS} FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_email(email: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT {USER_COLUMNS} FROM users WHERE email = ?", (email,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_user(user_id: int, fields: dict) -> dict | None:
+    """Update whitelisted user columns (codes, flags, password, login time)."""
+    allowed = {
+        "password_hash", "email_verified",
+        "verification_code_hash", "verification_code_expires_at",
+        "verification_attempts",
+        "reset_code_hash", "reset_code_expires_at", "reset_attempts",
+        "last_login_at",
+    }
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return get_user(user_id)
+    sql = "UPDATE users SET " + ", ".join(f"{k} = ?" for k in sets) + " WHERE id = ?"
+    with connect() as conn:
+        conn.execute(sql, (*sets.values(), user_id))
+    return get_user(user_id)
+
+
+def delete_user(user_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return cur.rowcount > 0
+
+
+def link_device_to_user(device_id: str, user_id: int) -> None:
+    """Attach a device to an account (a device belongs to whoever logged
+    in most recently on it)."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE devices SET user_id = ? WHERE device_id = ?",
+            (user_id, device_id),
+        )
+
+
+def get_device_user_id(device_id: str) -> int | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM devices WHERE device_id = ?", (device_id,)
+        ).fetchone()
+    return row["user_id"] if row and row["user_id"] is not None else None
+
+
+def get_devices_for_user(user_id: int) -> list[str]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT device_id FROM devices WHERE user_id = ?", (user_id,)
+        ).fetchall()
+    return [r["device_id"] for r in rows]
+
+
+def delete_device_data(device_id: str) -> None:
+    """Delete everything stored for one device (account deletion): wishes,
+    letters, check-ins, memories, persona, daily messages, consolidation
+    runs, and the device row itself. Aggregate violation counts are kept
+    (they never referenced a device)."""
+    with connect() as conn:
+        for table in (
+            "wishes", "letters", "checkins", "memories",
+            "daily_messages", "consolidation_runs",
+        ):
+            conn.execute(f"DELETE FROM {table} WHERE device_id = ?", (device_id,))
+        conn.execute("DELETE FROM persona WHERE device_id = ?", (device_id,))
+        conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
+
+
+# ---- rate limits (fixed windows, in SQLite so they survive restarts) ----
+
+def rate_limit_hit(scope: str, limit: int, window_seconds: int) -> bool:
+    """Count one hit in the current fixed window. Returns True when the
+    hit is within the limit, False when the scope is over the limit
+    (caller turns that into HTTP 429)."""
+    import time
+
+    now = int(time.time())
+    window_start = now - (now % window_seconds)
+    with connect() as conn:
+        # drop stale windows for this scope so the table stays small
+        conn.execute(
+            "DELETE FROM rate_limits WHERE scope = ? AND window_start < ?",
+            (scope, window_start - window_seconds),
+        )
+        row = conn.execute(
+            "SELECT count FROM rate_limits WHERE scope = ? AND window_start = ?",
+            (scope, window_start),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO rate_limits (scope, window_start, count) VALUES (?, ?, 1)",
+                (scope, window_start),
+            )
+            return True
+        if row["count"] >= limit:
+            return False
+        conn.execute(
+            "UPDATE rate_limits SET count = count + 1"
+            " WHERE scope = ? AND window_start = ?",
+            (scope, window_start),
+        )
+        return True
+
+
+# ---- image-captcha challenges ----
+
+def create_captcha_challenge(challenge_id: str, code_hash: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO captcha_challenges (id, code_hash, created_at, used)"
+            " VALUES (?, ?, ?, 0)",
+            (challenge_id, code_hash, _now_iso()),
+        )
+
+
+def consume_captcha_challenge(challenge_id: str) -> dict | None:
+    """Fetch a challenge and mark it used in one step: every challenge
+    allows exactly one validation attempt, right or wrong."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, code_hash, created_at, used FROM captcha_challenges"
+            " WHERE id = ?",
+            (challenge_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE captcha_challenges SET used = 1 WHERE id = ?",
+            (challenge_id,),
+        )
+    return dict(row)
 
 
 # ---- wishes ----

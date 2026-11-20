@@ -18,6 +18,86 @@ data class DeviceAuthRequest(val deviceId: String)
 
 data class DeviceAuthResponse(val token: String)
 
+// ---------- Email accounts ----------
+
+data class CaptchaDto(
+    val challengeId: String,
+    val svg: String
+)
+
+data class RegisterRequest(
+    val email: String,
+    val password: String,
+    val deviceId: String,
+    val captchaChallengeId: String,
+    val captchaAnswer: String
+)
+
+data class LoginRequest(
+    val email: String,
+    val password: String,
+    val deviceId: String
+)
+
+data class AccountDto(
+    val id: Int,
+    val email: String,
+    val emailVerified: Boolean,
+    val createdAt: String? = null
+)
+
+/** Returned by register / login. emailSent is false when the server has
+ * no SMTP configured yet — the account is still usable unverified. */
+data class AuthResponse(
+    val token: String,
+    val user: AccountDto? = null,
+    val emailSent: Boolean? = null,
+    val emailVerified: Boolean? = null
+)
+
+data class CodeRequest(val code: String)
+
+data class EmailRequest(val email: String)
+
+data class ResetPasswordRequest(
+    val email: String,
+    val code: String,
+    val newPassword: String
+)
+
+data class ChangePasswordRequest(
+    val currentPassword: String,
+    val newPassword: String
+)
+
+data class DeleteAccountRequest(val password: String)
+
+data class MeResponse(
+    val deviceId: String,
+    val account: AccountDto?
+)
+
+data class VerifyResponse(
+    val ok: Boolean,
+    val user: AccountDto? = null
+)
+
+data class GenericOkResponse(
+    val ok: Boolean,
+    val message: String? = null,
+    val detail: String? = null,
+    val emailSent: Boolean? = null,
+    val alreadyVerified: Boolean? = null
+)
+
+// ---------- Privacy ----------
+
+data class PrivacyDto(
+    val version: String,
+    val updatedAt: String,
+    val text: String
+)
+
 // ---------- Wishes ----------
 
 data class WishDto(
@@ -109,6 +189,50 @@ interface ApiService {
 
     @POST("auth/device")
     suspend fun authDevice(@Body request: DeviceAuthRequest): DeviceAuthResponse
+
+    @GET("auth/captcha")
+    suspend fun getCaptcha(): CaptchaDto
+
+    @POST("auth/register")
+    suspend fun register(@Body request: RegisterRequest): AuthResponse
+
+    @POST("auth/login")
+    suspend fun login(@Body request: LoginRequest): AuthResponse
+
+    @GET("auth/me")
+    suspend fun getMe(@Header("Authorization") token: String): MeResponse
+
+    @POST("auth/verify-email")
+    suspend fun verifyEmail(
+        @Header("Authorization") token: String,
+        @Body request: CodeRequest
+    ): VerifyResponse
+
+    @POST("auth/resend-verification")
+    suspend fun resendVerification(
+        @Header("Authorization") token: String
+    ): GenericOkResponse
+
+    @POST("auth/forgot-password")
+    suspend fun forgotPassword(@Body request: EmailRequest): GenericOkResponse
+
+    @POST("auth/reset-password")
+    suspend fun resetPassword(@Body request: ResetPasswordRequest): GenericOkResponse
+
+    @POST("auth/change-password")
+    suspend fun changePassword(
+        @Header("Authorization") token: String,
+        @Body request: ChangePasswordRequest
+    ): GenericOkResponse
+
+    @POST("auth/delete-account")
+    suspend fun deleteAccount(
+        @Header("Authorization") token: String,
+        @Body request: DeleteAccountRequest
+    ): GenericOkResponse
+
+    @GET("privacy")
+    suspend fun getPrivacy(@Header("Authorization") token: String): PrivacyDto
 
     @POST("wishes")
     suspend fun createWish(

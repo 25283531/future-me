@@ -45,8 +45,12 @@ import com.junze.futureme.ui.letters.LetterDetailScreen
 import com.junze.futureme.ui.letters.LetterDetailViewModel
 import com.junze.futureme.ui.letters.LettersScreen
 import com.junze.futureme.ui.letters.LettersViewModel
+import com.junze.futureme.ui.account.AccountScreen
+import com.junze.futureme.ui.account.AccountViewModel
 import com.junze.futureme.ui.me.MeScreen
 import com.junze.futureme.ui.me.MeViewModel
+import com.junze.futureme.ui.privacy.PrivacyScreen
+import com.junze.futureme.ui.privacy.PrivacyViewModel
 import com.junze.futureme.ui.nav.Routes
 import com.junze.futureme.ui.theme.FutureMeTheme
 
@@ -193,9 +197,32 @@ private fun MainScaffold(app: FutureMeApp) {
             }
             composable(Routes.ME) {
                 val vm: MeViewModel = viewModel(
-                    factory = vmFactory { MeViewModel(app.repository, app.settings) }
+                    factory = vmFactory { MeViewModel(app.repository) }
                 )
-                MeScreen(viewModel = vm)
+                MeScreen(
+                    viewModel = vm,
+                    onAccountClick = { navController.navigate(Routes.ACCOUNT) },
+                    onPrivacyClick = { navController.navigate(Routes.PRIVACY) }
+                )
+            }
+            composable(Routes.ACCOUNT) {
+                val vm: AccountViewModel = viewModel(
+                    factory = vmFactory { AccountViewModel(app.repository) }
+                )
+                AccountScreen(
+                    viewModel = vm,
+                    onPrivacyClick = { navController.navigate(Routes.PRIVACY) },
+                    onBack = { navController.popBackStack() }
+                )
+            }
+            composable(Routes.PRIVACY) {
+                val vm: PrivacyViewModel = viewModel(
+                    factory = vmFactory { PrivacyViewModel(app.repository) }
+                )
+                PrivacyScreen(
+                    viewModel = vm,
+                    onBack = { navController.popBackStack() }
+                )
             }
         }
     }

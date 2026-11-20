@@ -7,6 +7,7 @@ key is set, so letter generation must return 503.
 """
 import json
 import os
+import secrets
 import sqlite3
 import stat
 import subprocess
@@ -849,3 +850,383 @@ def test_decrypt_export_tool():
     assert "wishes" in audit
     assert "ENCRYPT-MARKER" not in audit
     assert "PRIVACY-WISH" not in audit
+
+
+# ---------- email accounts, captcha, SMTP, privacy ----------
+
+def _xff(n: int) -> dict:
+    """Distinct fake client IP per test (rate limits are per IP)."""
+    return {"X-Forwarded-For": f"10.9.0.{n}"}
+
+
+def _make_captcha(code: str = "ABCD") -> str:
+    """Insert a challenge with a KNOWN code (via the real hash function)
+    so tests exercise the real validation path (expiry, single-use)."""
+    from app import accounts
+
+    cid = f"test-ch-{secrets.token_hex(4)}"
+    database.create_captcha_challenge(cid, accounts._captcha_code_hash(cid, code))
+    return cid
+
+
+def _register(email: str, device_id: str, ip: dict, code: str = "ABCD",
+              password: str = "password123"):
+    ch = _make_captcha(code)
+    return client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": email, "password": password, "device_id": device_id,
+            "captcha_challenge_id": ch, "captcha_answer": code,
+        },
+        headers=ip,
+    )
+
+
+def _verify_user(email: str) -> dict:
+    """Simulate the emailed verification code (SMTP is not configured in
+    tests, so the code is issued through the internal helper)."""
+    from app import accounts
+
+    user = database.get_user_by_email(email)
+    code = accounts.issue_verification_code(user["id"])
+    return {"user": user, "code": code}
+
+
+def test_auth_register_login_verify_flow():
+    from app import accounts
+
+    ip = _xff(1)
+    r = _register("flow@example.com", "flow-device-001", ip)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    # SMTP not configured in tests: no email sent, but the account is
+    # created and usable unverified.
+    assert body["email_sent"] is False
+    assert body["email_verified"] is False
+    assert body["user"]["email"] == "flow@example.com"
+    assert body["user"]["email_verified"] is False
+    token = body["token"]
+
+    # unverified user can log in and use the app normally
+    r = client.post(
+        "/api/v1/auth/login",
+        json={"email": "flow@example.com", "password": "password123",
+              "device_id": "flow-device-001"},
+        headers=ip,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["email_verified"] is False
+    r = client.post(
+        "/api/v1/wishes",
+        json={"text": "90天后通过教师资格证考试", "category": "学习考证", "days": 90},
+        headers=_auth(token),
+    )
+    assert r.status_code == 201, r.text
+
+    # /auth/me shows the unverified account; membership is per-account
+    r = client.get("/api/v1/auth/me", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()["account"]["email_verified"] is False
+    r = client.get("/api/v1/membership/status", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()["account"] is True
+    assert r.json()["email_verified"] is False
+    assert r.json()["trial_days_left"] == 7
+
+    # resend without SMTP: graceful, no email sent
+    r = client.post("/api/v1/auth/resend-verification", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()["email_sent"] is False
+
+    # verify with the (simulated emailed) code; single-use
+    code = _verify_user("flow@example.com")["code"]
+    r = client.post("/api/v1/auth/verify-email", json={"code": code}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email_verified"] is True
+    r = client.post("/api/v1/auth/verify-email", json={"code": code}, headers=_auth(token))
+    assert r.status_code == 400
+
+    # duplicate registration rejected
+    ch = _make_captcha("ABCD")
+    r = client.post(
+        "/api/v1/auth/register",
+        json={"email": "flow@example.com", "password": "password123",
+              "device_id": "flow-device-002",
+              "captcha_challenge_id": ch, "captcha_answer": "ABCD"},
+        headers=ip,
+    )
+    assert r.status_code == 400
+
+
+def test_auth_captcha_flow():
+    r = client.get("/api/v1/auth/captcha")
+    assert r.status_code == 200
+    svg = r.json()["svg"]
+    assert svg.startswith("<svg") and svg.count("<text") == 4
+
+    # wrong answer consumes the challenge (one attempt only)
+    ch = _make_captcha("ABCD")
+    r = client.post(
+        "/api/v1/auth/register",
+        json={"email": "captcha@example.com", "password": "password123",
+              "device_id": "captcha-device-001",
+              "captcha_challenge_id": ch, "captcha_answer": "ZZZZ"},
+        headers=_xff(6),
+    )
+    assert r.status_code == 400
+    # same challenge with the right answer now: already consumed
+    r = client.post(
+        "/api/v1/auth/register",
+        json={"email": "captcha@example.com", "password": "password123",
+              "device_id": "captcha-device-001",
+              "captcha_challenge_id": ch, "captcha_answer": "ABCD"},
+        headers=_xff(6),
+    )
+    assert r.status_code == 400
+
+
+def test_auth_forgot_reset_requires_verified():
+    from app import accounts
+
+    ip = _xff(2)
+    # unverified user: forgot-password is generic, reset never works
+    r = _register("unverified@example.com", "unverified-device-001", ip)
+    assert r.status_code == 201, r.text
+    r = client.post("/api/v1/auth/forgot-password",
+                    json={"email": "unverified@example.com"}, headers=ip)
+    assert r.status_code == 200
+    assert "已发送" in r.json()["message"]
+    r = client.post("/api/v1/auth/reset-password",
+                    json={"email": "unverified@example.com", "code": "123456",
+                          "new_password": "newpassword123"})
+    assert r.status_code == 400
+
+    # unknown email: identical responses (no existence leak)
+    r = client.post("/api/v1/auth/forgot-password",
+                    json={"email": "nobody@example.com"}, headers=ip)
+    assert r.status_code == 200
+    assert r.json()["message"] == (
+        "如果该邮箱已注册且已验证，重置密码的邮件已发送，请查收（10 分钟内有效）。"
+    )
+    r = client.post("/api/v1/auth/reset-password",
+                    json={"email": "nobody@example.com", "code": "123456",
+                          "new_password": "newpassword123"})
+    assert r.status_code == 400
+
+    # verified user: full reset flow
+    r = _register("verified@example.com", "verified-device-001", ip)
+    assert r.status_code == 201, r.text
+    token = r.json()["token"]
+    code = _verify_user("verified@example.com")["code"]
+    r = client.post("/api/v1/auth/verify-email", json={"code": code}, headers=_auth(token))
+    assert r.status_code == 200
+
+    r = client.post("/api/v1/auth/forgot-password",
+                    json={"email": "verified@example.com"}, headers=ip)
+    assert r.status_code == 200
+    user = database.get_user_by_email("verified@example.com")
+    reset_code = accounts.issue_reset_code(user["id"])
+    r = client.post("/api/v1/auth/reset-password",
+                    json={"email": "verified@example.com", "code": "000000",
+                          "new_password": "newpassword123"})
+    assert r.status_code == 400
+    r = client.post("/api/v1/auth/reset-password",
+                    json={"email": "verified@example.com", "code": reset_code,
+                          "new_password": "newpassword123"})
+    assert r.status_code == 200, r.text
+    # new password works, old one does not
+    r = client.post("/api/v1/auth/login",
+                    json={"email": "verified@example.com", "password": "newpassword123",
+                          "device_id": "verified-device-001"}, headers=ip)
+    assert r.status_code == 200
+    r = client.post("/api/v1/auth/login",
+                    json={"email": "verified@example.com", "password": "password123",
+                          "device_id": "verified-device-001"}, headers=ip)
+    assert r.status_code == 401
+
+
+def test_verification_code_max_attempts():
+    ip = _xff(9)
+    r = _register("attempts@example.com", "attempts-device-001", ip)
+    assert r.status_code == 201, r.text
+    token = r.json()["token"]
+    code = _verify_user("attempts@example.com")["code"]
+    for _ in range(5):
+        r = client.post("/api/v1/auth/verify-email", json={"code": "000000"},
+                        headers=_auth(token))
+        assert r.status_code == 400
+    # 5 wrong attempts invalidate the code — even the right one fails now
+    r = client.post("/api/v1/auth/verify-email", json={"code": code}, headers=_auth(token))
+    assert r.status_code == 400
+
+
+def test_auth_change_password_requires_verified():
+    ip = _xff(10)
+    r = _register("changepw@example.com", "changepw-device-001", ip)
+    assert r.status_code == 201, r.text
+    token = r.json()["token"]
+
+    # unverified: change password is refused
+    r = client.post("/api/v1/auth/change-password",
+                    json={"current_password": "password123",
+                          "new_password": "newpassword123"},
+                    headers=_auth(token))
+    assert r.status_code == 403
+
+    # device-only token (no account): refused as well
+    dtok = _new_device_token("changepw-anon-device")
+    r = client.post("/api/v1/auth/change-password",
+                    json={"current_password": "password123",
+                          "new_password": "newpassword123"},
+                    headers=_auth(dtok))
+    assert r.status_code == 401
+
+    # verify, then wrong current password / right one
+    code = _verify_user("changepw@example.com")["code"]
+    r = client.post("/api/v1/auth/verify-email", json={"code": code}, headers=_auth(token))
+    assert r.status_code == 200
+    r = client.post("/api/v1/auth/change-password",
+                    json={"current_password": "wrong-password",
+                          "new_password": "newpassword123"},
+                    headers=_auth(token))
+    assert r.status_code == 400
+    r = client.post("/api/v1/auth/change-password",
+                    json={"current_password": "password123",
+                          "new_password": "newpassword123"},
+                    headers=_auth(token))
+    assert r.status_code == 200, r.text
+    r = client.post("/api/v1/auth/login",
+                    json={"email": "changepw@example.com", "password": "newpassword123",
+                          "device_id": "changepw-device-001"}, headers=ip)
+    assert r.status_code == 200
+
+
+def test_auth_register_rate_limit():
+    ip = _xff(3)
+    for i in range(5):
+        r = _register(f"rate{i}@example.com", f"rate-device-{i}", ip, code="WXYZ")
+        assert r.status_code == 201, r.text
+    r = _register("rate5@example.com", "rate-device-5", ip, code="WXYZ")
+    assert r.status_code == 429
+
+
+def test_auth_login_rate_limit():
+    ip = _xff(4)
+    r = _register("lockout@example.com", "lockout-device-001", _xff(5), code="JKLM")
+    assert r.status_code == 201, r.text
+    for _ in range(10):
+        r = client.post("/api/v1/auth/login",
+                        json={"email": "lockout@example.com", "password": "wrong-password",
+                              "device_id": "lockout-device-001"}, headers=ip)
+        assert r.status_code == 401
+    r = client.post("/api/v1/auth/login",
+                    json={"email": "lockout@example.com", "password": "wrong-password",
+                          "device_id": "lockout-device-001"}, headers=ip)
+    assert r.status_code == 429
+    # even the right password is locked out until the window passes
+    r = client.post("/api/v1/auth/login",
+                    json={"email": "lockout@example.com", "password": "password123",
+                          "device_id": "lockout-device-001"}, headers=ip)
+    assert r.status_code == 429
+
+
+def test_legacy_v1_token_still_works():
+    """A 3-part token issued before accounts existed still authenticates
+    (as an anonymous device)."""
+    import base64
+    import hashlib
+    import hmac as hmac_mod
+
+    device_id = "legacy-device-001"
+    database.get_or_create_device(device_id)
+    secret = database.get_or_create_jwt_secret()
+    nonce = "aabbccddeeff00112233445566778899"
+    payload = f"{device_id}.{nonce}"
+    sig = hmac_mod.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    b64 = base64.urlsafe_b64encode(device_id.encode()).decode().rstrip("=")
+    token = f"{b64}.{nonce}.{sig}"
+    r = client.get("/api/v1/wishes", headers=_auth(token))
+    assert r.status_code == 200
+    r = client.get("/api/v1/auth/me", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()["account"] is None
+    assert r.json()["device_id"] == device_id
+
+
+def test_auth_me_and_delete_account():
+    ip = _xff(7)
+    r = _register("delete@example.com", "delete-device-001", ip, code="QRST")
+    assert r.status_code == 201, r.text
+    token = r.json()["token"]
+    # a wish on this device, so deletion has something to remove
+    r = client.post("/api/v1/wishes",
+                    json={"text": "90天后通过教师资格证考试", "category": "学习考证", "days": 90},
+                    headers=_auth(token))
+    assert r.status_code == 201
+
+    dtok = _new_device_token("anon-device-001")
+    r = client.get("/api/v1/auth/me", headers=_auth(dtok))
+    assert r.status_code == 200 and r.json()["account"] is None
+    r = client.get("/api/v1/auth/me", headers=_auth(token))
+    assert r.json()["account"]["email"] == "delete@example.com"
+
+    r = client.post("/api/v1/auth/delete-account", json={"password": "wrong-password"},
+                    headers=_auth(token))
+    assert r.status_code == 400
+    r = client.post("/api/v1/auth/delete-account", json={"password": "password123"},
+                    headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert database.get_user_by_email("delete@example.com") is None
+    assert database.device_exists("delete-device-001") is False
+    # the old token is dead (device row gone)
+    r = client.get("/api/v1/wishes", headers=_auth(token))
+    assert r.status_code == 401
+
+
+def test_membership_account_vs_device():
+    ip = _xff(8)
+    r = _register("member@example.com", "member-device-001", ip, code="UVWX")
+    assert r.status_code == 201, r.text
+    token = r.json()["token"]
+    r = client.get("/api/v1/membership/status", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()["account"] is True
+    assert r.json()["email_verified"] is False
+    assert r.json()["trial_days_left"] == 7
+    dtok = _new_device_token("member-anon-device")
+    r = client.get("/api/v1/membership/status", headers=_auth(dtok))
+    assert r.json()["account"] is False
+
+
+def test_admin_smtp_status_and_test():
+    c = TestClient(app)
+    c.post("/api/v1/admin/login", json={"password": ADMIN_PASSWORD})
+    r = c.get("/api/v1/admin/smtp/status")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Aliyun enterprise mail is pre-filled, but no mailbox/password yet:
+    # not configured, and the password never leaves the server.
+    assert body["configured"] is False
+    assert body["host"] == "smtp.qiye.aliyun.com"
+    assert body["port"] == "465"
+    assert body["security"] == "ssl"
+    assert "password" not in body
+    # test-send without config fails clearly (not silently)
+    r = c.post("/api/v1/admin/smtp/test", json={"to": "someone@example.com"})
+    assert r.status_code == 502
+    assert "未配置" in r.json()["detail"]
+
+
+def test_privacy_endpoints(token):
+    r = client.get("/privacy")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "隐私协议" in r.text
+    assert "加密" in r.text
+    r = client.get("/api/v1/privacy", headers=_auth(token))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["version"] == "1.0"
+    assert "加密" in body["text"]
+    assert "后台" in body["text"]
+    assert "注销" in body["text"]

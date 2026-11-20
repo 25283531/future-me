@@ -70,6 +70,7 @@
     <button data-tab="activities">活动管理</button>
     <button data-tab="daily">每日一句</button>
     <button data-tab="memory">记忆演变</button>
+    <button data-tab="smtp">邮件（SMTP）</button>
   </nav>
   <main>
     <section id="tab-dashboard" class="active">
@@ -219,6 +220,34 @@
       <p class="hint">没有配 LLM Key 时，整合只做规则处理（去重、遗忘、打卡里程碑、按规则刷新人格介绍），不会失败。</p>
       <button class="btn" data-save="memory">保存记忆演变设置</button>
     </section>
+
+    <section id="tab-smtp">
+      <h2>邮件（SMTP）· 阿里企业邮箱</h2>
+      <p class="muted">邮箱验证码和密码找回都走这里，默认用阿里企业邮箱（服务器、端口、加密方式已预填好）。不配也能注册登录（账号可用，只是发不出验证邮件）；配好后用户才能验证邮箱、找回密码。</p>
+      <p id="smtp-status" class="privacy">邮件状态：读取中…</p>
+      <label>发件服务器（SMTP 主机）</label>
+      <input type="text" id="set-smtp.host" placeholder="smtp.qiye.aliyun.com">
+      <label>端口</label>
+      <input type="number" id="set-smtp.port" min="1" max="65535">
+      <label>加密方式</label>
+      <select id="set-smtp.security">
+        <option value="ssl">SSL（465，阿里企业邮箱用这个）</option>
+        <option value="tls">STARTTLS（587，阿里企业邮箱不支持）</option>
+        <option value="none">不加密</option>
+      </select>
+      <label>发件账号（完整的邮箱地址）</label>
+      <input type="text" id="set-smtp.username" autocomplete="off" placeholder="如 yourname@250886.xyz">
+      <label>密码 / 安全密码</label>
+      <input type="password" id="set-smtp.password" autocomplete="off">
+      <p class="hint">填该邮箱账号的密码；如果账号开启了第三方客户端安全密码，就填安全密码。显示为 ******** 表示已配置，不改请勿动。</p>
+      <label>发件人地址（From，一般与发件账号相同）</label>
+      <input type="text" id="set-smtp.from_address" placeholder="如 yourname@250886.xyz">
+      <button class="btn" data-save="smtp">保存邮件配置</button>
+      <h3>测试发送</h3>
+      <label>收件邮箱</label>
+      <input type="text" id="smtp-test-to" placeholder="输入一个能收信的邮箱">
+      <button class="btn secondary" id="smtp-test-btn">发送测试邮件</button>
+    </section>
   </main>
 </div>
 <div id="msg"></div>
@@ -266,6 +295,18 @@ async function loadAll() {
   await loadDashboard();
   await loadMessages();
   await loadActivities();
+  await loadSmtpStatus();
+}
+
+async function loadSmtpStatus() {
+  try {
+    const s = await api("/api/v1/admin/smtp/status");
+    $("smtp-status").textContent = s.configured
+      ? `邮件状态：已配置（${s.host}:${s.port}，${s.security}，发件人 ${s.from_address}）—— 用户可以验证邮箱、找回密码。`
+      : "邮件状态：未配置 —— 注册登录不受影响，但发不出验证邮件和密码找回邮件。请填写下面的发件服务器和发件人地址。";
+  } catch (e) {
+    $("smtp-status").textContent = "邮件状态：读取失败";
+  }
 }
 
 function setVal(id, key, isCheck) {
@@ -324,6 +365,12 @@ function fillSettings() {
   setVal("set-memory.evolution_enabled", "memory.evolution_enabled", true);
   setVal("set-memory.reflection_enabled", "memory.reflection_enabled", true);
   setVal("set-memory.consolidation_interval_days", "memory.consolidation_interval_days");
+  setVal("set-smtp.host", "smtp.host");
+  setVal("set-smtp.port", "smtp.port");
+  setVal("set-smtp.security", "smtp.security");
+  setVal("set-smtp.username", "smtp.username");
+  setVal("set-smtp.password", "smtp.password");
+  setVal("set-smtp.from_address", "smtp.from_address");
 }
 
 async function saveSettings(keys) {
@@ -362,12 +409,31 @@ async function saveSettings(keys) {
     grab("set-memory.reflection_enabled", "memory.reflection_enabled", true);
     grab("set-memory.consolidation_interval_days", "memory.consolidation_interval_days");
   }
+  if (keys.includes("smtp")) {
+    grab("set-smtp.host", "smtp.host");
+    grab("set-smtp.port", "smtp.port");
+    grab("set-smtp.security", "smtp.security");
+    grab("set-smtp.username", "smtp.username");
+    grab("set-smtp.password", "smtp.password");
+    grab("set-smtp.from_address", "smtp.from_address");
+  }
   try {
     SETTINGS = await api("/api/v1/admin/settings", { method: "POST", body: JSON.stringify({ settings: vals }) });
     fillSettings();
+    if (keys.includes("smtp")) await loadSmtpStatus();
     toast("已保存");
   } catch (e) { toast("保存失败：" + e.message); }
 }
+
+$("smtp-test-btn").onclick = async () => {
+  const to = $("smtp-test-to").value.trim();
+  if (!to) { toast("请先输入收件邮箱"); return; }
+  try {
+    const r = await api("/api/v1/admin/smtp/test", { method: "POST", body: JSON.stringify({ to }) });
+    toast(r.detail || "测试邮件已发送");
+    await loadSmtpStatus();
+  } catch (e) { toast("发送失败：" + e.message); }
+};
 
 async function loadDashboard() {
   const d = await api("/api/v1/admin/dashboard");

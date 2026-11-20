@@ -6,7 +6,6 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.junze.futureme.data.api.ApiClient
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -16,7 +15,9 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 /**
  * Small persistent settings: device id (generated once), auth token,
- * backend base URL, selected voice, cached daily sentence.
+ * logged-in account email, selected voice, cached daily sentence.
+ * The backend address is built into the app (ApiClient.DEFAULT_BASE_URL)
+ * and is deliberately NOT stored here — the user cannot change it.
  */
 class SettingsStore(context: Context) {
 
@@ -28,9 +29,7 @@ class SettingsStore(context: Context) {
 
     val token: Flow<String?> = store.data.map { prefs -> prefs[KEY_TOKEN] }
 
-    val baseUrl: Flow<String> = store.data.map { prefs ->
-        prefs[KEY_BASE_URL] ?: ApiClient.DEFAULT_BASE_URL
-    }
+    val accountEmail: Flow<String?> = store.data.map { prefs -> prefs[KEY_ACCOUNT_EMAIL] }
 
     val selectedVoiceId: Flow<String?> = store.data.map { prefs -> prefs[KEY_VOICE_ID] }
 
@@ -51,8 +50,10 @@ class SettingsStore(context: Context) {
         }
     }
 
-    suspend fun saveBaseUrl(url: String) {
-        store.edit { it[KEY_BASE_URL] = url.trim().trimEnd('/') }
+    suspend fun saveAccountEmail(email: String?) {
+        store.edit { prefs ->
+            if (email == null) prefs.remove(KEY_ACCOUNT_EMAIL) else prefs[KEY_ACCOUNT_EMAIL] = email
+        }
     }
 
     suspend fun saveSelectedVoiceId(voiceId: String?) {
@@ -68,7 +69,7 @@ class SettingsStore(context: Context) {
     companion object {
         private val KEY_DEVICE_ID = stringPreferencesKey("device_id")
         private val KEY_TOKEN = stringPreferencesKey("auth_token")
-        private val KEY_BASE_URL = stringPreferencesKey("base_url")
+        private val KEY_ACCOUNT_EMAIL = stringPreferencesKey("account_email")
         private val KEY_VOICE_ID = stringPreferencesKey("selected_voice_id")
         private val KEY_SENTENCE = stringPreferencesKey("daily_sentence")
     }

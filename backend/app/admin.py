@@ -11,49 +11,16 @@ returns any single user's content (no wish/letter/memory/daily-sentence
 text, no device list, no export). Memory contents exist only for the
 server to assemble LLM context in memory.
 """
-import hashlib
-import hmac
-import secrets
-
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from . import database
+from . import database, mail
+from .accounts import hash_password, verify_password
 from .llm import PROVIDER_NAMES
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
 ADMIN_COOKIE = "fm_admin_session"
-
-# ---- password hashing (hashlib.scrypt, no extra deps) ----
-
-_SCRYPT_N = 16384
-_SCRYPT_R = 8
-_SCRYPT_P = 1
-
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    dk = hashlib.scrypt(
-        password.encode("utf-8"), salt=salt,
-        n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32,
-    )
-    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt.hex()}${dk.hex()}"
-
-
-def verify_password(password: str, stored: str) -> bool:
-    try:
-        parts = stored.split("$")
-        if len(parts) != 6 or parts[0] != "scrypt":
-            return False
-        n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
-        salt = bytes.fromhex(parts[4])
-        dk = hashlib.scrypt(
-            password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=32
-        )
-        return hmac.compare_digest(dk.hex(), parts[5])
-    except (ValueError, TypeError):
-        return False
 
 
 def _password_set() -> bool:
@@ -208,6 +175,19 @@ def _validate_settings(values: dict) -> dict[str, str]:
             if val not in ("generic", "previous"):
                 raise HTTPException(status_code=400, detail="fallback_mode must be generic or previous")
             cleaned[key] = val
+        elif key == "smtp.port":
+            try:
+                n = int(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="smtp port must be an integer")
+            if not 1 <= n <= 65535:
+                raise HTTPException(status_code=400, detail="smtp port must be 1-65535")
+            cleaned[key] = str(n)
+        elif key == "smtp.security":
+            val = str(raw).strip().lower()
+            if val not in ("tls", "ssl", "none"):
+                raise HTTPException(status_code=400, detail="smtp security must be tls, ssl or none")
+            cleaned[key] = val
         else:
             cleaned[key] = str(raw).strip() if raw is not None else ""
     return cleaned
@@ -333,3 +313,31 @@ def admin_delete_activity(act_id: str, request: Request):
     if not database.delete_activity(act_id):
         raise HTTPException(status_code=404, detail="activity not found")
     return {"ok": True}
+
+
+# ---- SMTP (verification / password-reset emails) ----
+
+@router.get("/smtp/status")
+def admin_smtp_status(request: Request):
+    require_admin(request)
+    return mail.smtp_status()
+
+
+class SmtpTestIn(BaseModel):
+    to: str = Field(..., min_length=3, max_length=254)
+
+
+@router.post("/smtp/test")
+def admin_smtp_test(body: SmtpTestIn, request: Request):
+    """Send a test email. Fails clearly when SMTP is not configured —
+    the admin console must show that state instead of pretending mail
+    works."""
+    require_admin(request)
+    from .accounts import valid_email
+
+    if not valid_email(body.to.strip()):
+        raise HTTPException(status_code=400, detail="invalid email address")
+    ok, detail = mail.send_test_email(body.to.strip())
+    if not ok:
+        raise HTTPException(status_code=502, detail=detail)
+    return {"ok": True, "detail": detail}

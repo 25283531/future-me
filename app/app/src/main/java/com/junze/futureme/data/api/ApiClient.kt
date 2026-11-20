@@ -8,26 +8,17 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 
 /**
- * Builds Retrofit for a base URL that the user can change in 我的 -> 服务器地址.
+ * Builds Retrofit for the built-in server address.
+ * The server address is fixed in the app — the user cannot change it.
  * All calls go to <baseUrl>/api/v1/… ; the auth token is passed per call
- * (see FutureMeRepository) so a base-url change never leaks a stale client.
+ * (see FutureMeRepository).
  */
 class ApiClient {
 
-    @Volatile
-    var baseUrl: String = DEFAULT_BASE_URL
-        private set
+    /** Fixed built-in server address (HTTPS only). */
+    val baseUrl: String = DEFAULT_BASE_URL
 
-    @Volatile
-    private var service: ApiService = buildService(baseUrl)
-
-    fun updateBaseUrl(url: String) {
-        val normalized = url.trim().trimEnd('/')
-        if (normalized.isNotEmpty() && normalized != baseUrl) {
-            baseUrl = normalized
-            service = buildService(normalized)
-        }
-    }
+    private val service: ApiService = buildService(baseUrl)
 
     fun service(): ApiService = service
 
@@ -50,8 +41,7 @@ class ApiClient {
     }
 
     companion object {
-        /** Tailscale IP of the home router backend; LAN fallback is 10.0.1.1:6999. */
-        const val DEFAULT_BASE_URL = "http://100.72.221.19:6999"
-        const val LAN_FALLBACK_BASE_URL = "http://10.0.1.1:6999"
+        /** Built-in backend address. The app never lets the user change it. */
+        const val DEFAULT_BASE_URL = "https://futureme.250886.xyz:32123"
     }
 }

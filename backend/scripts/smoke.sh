@@ -64,6 +64,19 @@ cat /tmp/smoke-letter.json; echo
 echo "== membership =="
 curl -fsS "$BASE/api/v1/membership/status" -H "Authorization: Bearer $TOKEN"; echo
 
+echo "== privacy page + JSON =="
+curl -fsS "$BASE/privacy" | grep -q "隐私协议" && echo "ok: /privacy serves the policy"
+curl -fsS "$BASE/api/v1/privacy" -H "Authorization: Bearer $TOKEN" | grep -q "加密" && echo "ok: /api/v1/privacy serves the policy text"
+
+echo "== captcha + register (no SMTP: account usable unverified) =="
+CAPTCHA_JSON=$(curl -fsS "$BASE/api/v1/auth/captcha")
+CHALLENGE=$(echo "$CAPTCHA_JSON" | "$PY" -c 'import sys,json;print(json.load(sys.stdin)["challenge_id"])')
+echo "$CAPTCHA_JSON" | grep -q "<svg" && echo "ok: captcha SVG returned"
+# wrong captcha answer must fail (challenge is single-use, so this also consumes it)
+curl -s -o /dev/null -w 'wrong captcha: %{http_code}\n' -X POST "$BASE/api/v1/auth/register" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"smoke@example.com\",\"password\":\"password123\",\"device_id\":\"smoke-device-curl\",\"captcha_challenge_id\":\"$CHALLENGE\",\"captcha_answer\":\"ZZZZ\"}"
+
 echo "== admin: unauthenticated dashboard rejected (expect 401) =="
 curl -s -o /dev/null -w '%{http_code}\n' "$BASE/api/v1/admin/dashboard"
 

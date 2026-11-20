@@ -20,7 +20,7 @@ FastAPI + SQLite，单容器部署。给 Android App 用：写愿望 → 多供�
 
 - 首次打开：设置管理员密码（至少 6 位，scrypt 存库），设置后即登录。
 - 之后：密码登录，会话 Cookie 7 天有效；右上角可退出。
-- 栏目：仪表盘（汇总数字）、话题与合规（分类分布 + 违规类型统计）、LLM 配置、TTS 配置、会员配置、消息推送、活动管理、每日一句（生成设置）。
+- 栏目：仪表盘（汇总数字）、话题与合规（分类分布 + 违规类型统计）、LLM 配置、TTS 配置、会员配置、消息推送、活动管理、每日一句（生成设置）、邮件（SMTP，阿里企业邮箱）。
 - **所有 Key 都在这里配**：LLM 五家供应商、TTS 三家、会员试用天数/月费/付费墙。密钥存在数据库设置表里，不走环境变量，不进 App。
 
 ## 隐私红线（硬性）
@@ -56,6 +56,18 @@ python3 scripts/decrypt_export.py \
 |---|---|---|
 | GET | `/api/v1/health` | 健康检查 + 已配置的供应商 |
 | POST | `/api/v1/auth/device` | `{device_id}` → `{token}`，其余接口用 `Authorization: Bearer <token>` |
+| GET | `/api/v1/auth/captcha` | 注册验证码：返回 `{challenge_id, svg}`（4 字符 SVG，纯 stdlib 绘制） |
+| POST | `/api/v1/auth/register` | `{email, password, device_id, captcha_challenge_id, captcha_answer}` → `{token, user, email_sent}`；未验证也可正常使用 |
+| POST | `/api/v1/auth/login` | `{email, password, device_id}` → `{token, user}`；未验证也可登录 |
+| GET | `/api/v1/auth/me` | 当前登录账号（`account: null` 表示匿名设备） |
+| POST | `/api/v1/auth/verify-email` | `{code}`（6 位，10 分钟有效，错 5 次作废） |
+| POST | `/api/v1/auth/resend-verification` | 登录态重发验证邮件；已验证返回 `already_verified`，SMTP 未配时返回 `email_sent: false` |
+| POST | `/api/v1/auth/forgot-password` | `{email}` → 永远返回同一通用回复，不透露邮箱是否存在；仅已验证邮箱会收到码 |
+| POST | `/api/v1/auth/reset-password` | `{email, code, new_password}`（仅已验证邮箱可用） |
+| POST | `/api/v1/auth/change-password` | `{current_password, new_password}`（登录态；仅已验证邮箱可用） |
+| POST | `/api/v1/auth/delete-account` | `{password}` → 删除账号及关联设备在服务端的数据（愿望/信件/打卡/记忆），不可恢复 |
+| GET | `/privacy` | 隐私协议 HTML 页 |
+| GET | `/api/v1/privacy` | 隐私协议 JSON（App 拉取，离线时用 App 内置副本） |
 | POST/GET | `/api/v1/wishes` | 创建 / 列出我的愿望（category：事业升职/换工作、财富收入、脱单恋爱、健康身材、学习考证、家庭亲子；days：30/90/365） |
 | GET | `/api/v1/wishes/{id}` | 愿望详情 |
 | POST | `/api/v1/letters/generate` | `{wish_id, voice_id?, provider?}` → 生成未来信（服务端调大模型；没有任何供应商 Key 时 503；`provider` 指定未配置/不存在的供应商时 400） |
@@ -69,7 +81,7 @@ python3 scripts/decrypt_export.py \
 | GET | `/api/v1/checkin/status` | `{streak_days, total_days, checked_in_today}` |
 | GET | `/api/v1/activities` | 活动列表（后台管理） |
 | GET | `/api/v1/messages` | 消息列表，App 打开时拉取（后台管理） |
-| GET | `/api/v1/membership/status` | `{plan: free_trial, trial_days_left, price_monthly_cny: 9.9, paywalled: false}`（按后台会员配置返回） |
+| GET | `/api/v1/membership/status` | `{plan: free_trial, trial_days_left, price_monthly_cny: 9.9, paywalled: false}`（按后台会员配置返回）；登录账号时返回账号会员（`account: true`），否则按设备试用 |
 
 ### 未来信供应商（OpenAI 兼容 `/chat/completions`，统一走 `app/llm.py`）
 
@@ -86,6 +98,14 @@ python3 scripts/decrypt_export.py \
 - 改默认供应商：后台 LLM 配置里改，或单次指定：`POST /letters/generate {"wish_id": 1, "provider": "hunyuan"}`。
 - 至少要配一个供应商的 Key，否则写信接口返回 503；`GET /llm/providers` 可查各供应商是否已配置。
 - 不用豆包：后端已不含任何豆包/火山方舟代码。
+
+### 邮箱账号、反机器注册与邮件（2026-11-20）
+
+- 账号（`users` 表，`app/accounts.py`）：邮箱唯一、scrypt 密码哈希、email_verified、6 位验证码 + 过期、重置码 + 过期。注册可选——匿名设备认证照常可用。**未验证邮箱可以登录并正常使用全部功能**；改密码和找回密码必须先验证邮箱；找回密码永远返回同一通用回复，不透露邮箱是否存在。
+- Token：沿用 HMAC token，v2 在签名负载里加 `user_id`（`device.nonce.user_id`）；旧版 3 段 v1 token 仍可验证（匿名设备）。注册/登录时把调用设备关联到账号（`devices.user_id`）；会员按账号算（已登录），否则按设备试用；愿望/信件本轮仍按设备，不做跨设备迁移。注销账号会删除该账号及关联设备在服务端的数据。
+- 防机器注册（无第三方 CAPTCHA、无外部 Key）：限流计数存 SQLite（`rate_limits` 表，重启不丢）——注册每 IP 每小时 5 次、登录每 IP/每邮箱每小时 10 次后临时锁定、验证/重发每邮箱每小时 3 次；验证码 10 分钟过期、一次有效、错 5 次作废。另加轻量服务端验证码：注册时后端生成随机 4 字符，用纯 stdlib 画成带噪点/扭曲的 SVG（`GET /api/v1/auth/captcha`），App 展示后用户输入，注册时校验（challenge 一次有效，失败即作废）。
+- 邮件（`app/mail.py`，只用 stdlib smtplib）：验证/重置邮件走 SMTP，配置在后台设置表 + `/admin` 邮件栏目（主机、端口、加密、账号、密码、发件人）+ 测试发送按钮。**默认阿里企业邮箱**（用户 2026-11-20 决定）：`smtp.qiye.aliyun.com:465` + SSL（隐式 TLS）；阿里企业邮箱**不提供 587 端口**，不要改成 STARTTLS/587。用户名 = 完整邮箱地址；密码 = 该邮箱账号的密码（开启第三方客户端安全密码时填安全密码）。SMTP 未配置时注册登录照常可用（账号可用、未验证），只是发不出验证邮件——后台邮件栏目明确显示“未配置”。SMTP 密码按 secret 存设置表，不进环境变量、不进日志。
+- 隐私协议（`app/privacy.py`）：中文协议与实际实现一致——收集内容（邮箱、密码哈希、愿望/信件/打卡、设备号）、用途、Fernet 加密、后台看不到任何单个用户内容（仅汇总）、LLM/TTS 供应商仅在生成时收到文本、保存期限 + 按请求删除、法律保留、用户权利、联系方式占位。`GET /privacy`（HTML）与 `GET /api/v1/privacy`（JSON，供 App）；App 在“我的”页有“隐私协议”入口，注册屏有“我已阅读并同意《隐私协议》”复选框，不勾选不能注册；App 内置一份协议副本（`res/raw/privacy_policy.txt`）作离线兜底。
 
 ### 每日一句（个性化）与记忆系统
 
@@ -138,8 +158,9 @@ docker compose pull
 docker compose up -d
 ```
 
-> 域名/DDNS：沿用路由器现有的 Lucky/DDNS，把 6999 端口映射出去即可；也可以用
-> Tailscale 从外网访问（路由器已跑 Tailscale）。
+> App 内置服务器地址 `https://futureme.250886.xyz:32123`（用户不可改），
+> 需要把 6999 端口映射到 32123 并配好 TLS；该地址尚未联通前 App 连不上后端。
+> 域名/DDNS 沿用路由器现有的 Lucky/DDNS。
 
 ## 测试
 

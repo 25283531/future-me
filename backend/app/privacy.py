@@ -1,0 +1,105 @@
+"""Privacy policy for 未来我 (Future Me).
+
+The text below is written to match the ACTUAL implementation — what is
+collected, how it is stored (Fernet encryption at rest), who can see
+what (the admin console sees aggregates only, never any single user's
+content), and which third parties receive text (the LLM/TTS providers,
+only to generate the reply the user asked for). Update this file
+whenever the implementation changes, and keep the copy bundled in the
+Android app (app/src/main/res/raw/privacy_policy.txt) in sync.
+"""
+
+PRIVACY_VERSION = "1.0"
+PRIVACY_UPDATED = "2026-11-20"
+
+PRIVACY_TEXT = """未来我 · 隐私协议
+
+最后更新：2026 年 11 月 20 日　版本：1.0
+
+「未来我」是一款积极心理 / 目标可视化应用：你写下愿望，来自“未来的自己”会给你写鼓励信，每天为你生成一句与目标相关的话，陪你打卡坚持。我们非常重视你的隐私，这份协议说明我们收集什么、用来做什么、如何保护。
+
+一、我们收集哪些信息
+
+1. 账号信息（注册时提供）：邮箱地址；密码只保存为不可逆的哈希值，服务端看不到你的原始密码。
+2. 设备号：App 首次启动时随机生成的一串编号，用于区分不同设备，不含任何个人信息。
+3. 你写下的内容：愿望、打卡记录；AI 生成的未来信、每日一句；以及“未来的自己”记住的关于你的事实（如目标、坚持天数），用于让它越聊越懂你。
+4. 服务运行记录：仅统计数字，如用户总数、打卡总数；不记录你写了什么。
+
+二、这些信息用来做什么
+
+仅用于：账号登录与密码找回；生成你想要的未来信与每日一句；统计打卡、展示你的进度；维持服务正常运行。我们不会把你的信息用于广告，也不会出售给任何第三方。
+
+三、你的内容如何保存
+
+1. 加密存储：你写下的愿望、信件、每日一句、记忆内容在写入数据库之前都会加密保存；密钥单独存放在与数据库不同的文件里。
+2. 后台看不到个人内容：管理员在后台只能看到汇总数字（如愿望总数、各类话题各有多少人），看不到任何单个用户的愿望、信件、记忆原文，也不能导出。
+3. 解密只在两种情况下发生，且只在服务器内存里：把内容回传给你自己的 App；为你生成下一封信或每日一句时组装上下文。除此之外，任何人（包括管理员）都不能查看你的原文；如需配合公检法依法检查，只能凭合法手续、通过专用的解密工具进行，并会留下审计记录。
+
+四、第三方服务
+
+生成未来信与语音时，你的文字会发送给所选的 AI 服务商，仅用于生成当次内容，不作他用：
+- 写信：千问、腾讯混元、硅基流动、智谱 GLM，或你自行配置的通用接口；
+- 语音：Qwen3-TTS、智谱 GLM-TTS、腾讯云 TTS，或免费的 Edge TTS。
+我们不会把你的邮箱、密码或账号信息发给这些服务商。
+
+五、保存期限与删除
+
+1. 账号注销：App 内“我的 → 账号 → 注销账号”可删除账号，注销会删除该账号及关联设备在服务端保存的愿望、信件、打卡、记忆等数据。
+2. 法律保留：如法律法规要求，或为配合公检法依法检查，相关加密数据可能按法律要求保留；此种情况下的解密仅凭合法手续进行（见第三条第 3 款）。
+3. 未验证的邮箱不影响使用：不验证邮箱也可以正常使用 App；只有修改密码和找回密码需要先验证邮箱。
+
+六、未成年人
+
+本服务主要面向成年人。未成年人请在监护人同意和指导下使用。
+
+七、你的权利
+
+你可以随时：修改密码（需先验证邮箱）；查看、更正自己的账号信息；在 App 内注销账号并删除服务端数据；撤回对本协议的同意并停止使用本服务（停止使用后，已生成的内容按第五条处理）。
+
+八、联系我们
+
+如对本协议或你的个人信息有疑问，请联系：客服邮箱：[待填写]。
+本协议更新后会在 App 内提示，以最新版本为准。
+"""
+
+PRIVACY_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>未来我 · 隐私协议</title>
+<style>
+  body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #FFF7E8; color: #333; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 20px 60px; background: #fff; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 16px; margin-top: 28px; }
+  p, li { font-size: 14px; line-height: 1.9; }
+  .meta { color: #999; font-size: 13px; }
+</style>
+</head>
+<body><main>
+<h1>未来我 · 隐私协议</h1>
+<p class="meta">最后更新：2026 年 11 月 20 日　版本：1.0</p>
+__BODY__
+</main></body>
+</html>
+"""
+
+
+def privacy_html() -> str:
+    """Render the policy as a simple HTML page (line breaks + numbered
+    sections become headings)."""
+    lines = []
+    for raw in PRIVACY_TEXT.strip().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("未来我 · 隐私协议"):
+            continue
+        if line.startswith("最后更新"):
+            continue
+        if line and len(line) <= 12 and line[0] in "一二三四五六七八九十" and "、" in line:
+            lines.append(f"<h2>{line}</h2>")
+        else:
+            lines.append(f"<p>{line}</p>")
+    return PRIVACY_HTML.replace("__BODY__", "\n".join(lines))

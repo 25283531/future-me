@@ -28,7 +28,6 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -58,10 +57,10 @@ import androidx.lifecycle.viewModelScope
 import com.junze.futureme.R
 import com.junze.futureme.data.api.ActivityDto
 import com.junze.futureme.data.api.CheckinStatusDto
+import com.junze.futureme.data.api.MeResponse
 import com.junze.futureme.data.api.MembershipStatusDto
 import com.junze.futureme.data.api.MessageDto
 import com.junze.futureme.data.api.WishDto
-import com.junze.futureme.data.prefs.SettingsStore
 import com.junze.futureme.data.repository.FutureMeRepository
 import com.junze.futureme.ui.home.daysUntil
 import com.junze.futureme.ui.theme.AmberDark
@@ -77,15 +76,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MeViewModel(
-    private val repository: FutureMeRepository,
-    private val settings: SettingsStore
+    private val repository: FutureMeRepository
 ) : ViewModel() {
 
     val wishes: StateFlow<List<WishDto>> = repository.wishes
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val baseUrl: StateFlow<String> = settings.baseUrl
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
+    private val _me = MutableStateFlow<MeResponse?>(null)
+    val me: StateFlow<MeResponse?> = _me
 
     private val _membership = MutableStateFlow<MembershipStatusDto?>(null)
     val membership: StateFlow<MembershipStatusDto?> = _membership
@@ -110,24 +108,13 @@ class MeViewModel(
     fun refresh() {
         viewModelScope.launch {
             repository.refreshWishes()
+            repository.getMe().onSuccess { _me.value = it }
             repository.getMembershipStatus().onSuccess { _membership.value = it }
             repository.getMessages()
                 .onSuccess { _messages.value = it }
                 .onFailure { _notice.value = "消息拉取失败，请检查网络" }
             repository.getActivities().onSuccess { _activities.value = it }
             repository.getCheckinStatus().onSuccess { _checkinStatus.value = it }
-        }
-    }
-
-    /** Changing the server forces a fresh device auth against the new host. */
-    fun saveBaseUrl(url: String) {
-        viewModelScope.launch {
-            val normalized = url.trim().trimEnd('/')
-            settings.saveBaseUrl(normalized)
-            settings.saveToken(null)
-            repository.updateBaseUrl(normalized)
-            _notice.value = "服务器地址已保存，正在重新连接"
-            refresh()
         }
     }
 
@@ -138,20 +125,23 @@ class MeViewModel(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MeScreen(viewModel: MeViewModel) {
+fun MeScreen(
+    viewModel: MeViewModel,
+    onAccountClick: () -> Unit,
+    onPrivacyClick: () -> Unit
+) {
     val wishes by viewModel.wishes.collectAsState()
+    val me by viewModel.me.collectAsState()
     val membership by viewModel.membership.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val activities by viewModel.activities.collectAsState()
     val checkinStatus by viewModel.checkinStatus.collectAsState()
-    val baseUrl by viewModel.baseUrl.collectAsState()
     val notice by viewModel.notice.collectAsState()
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var serverUrlText by remember(baseUrl) { mutableStateOf(baseUrl) }
     var isSavingImage by remember { mutableStateOf(false) }
     val graphicsLayer = rememberGraphicsLayer()
 
@@ -259,13 +249,7 @@ fun MeScreen(viewModel: MeViewModel) {
                 }
             }
 
-            // ---- Server address ----
-            item {
-                Text(
-                    text = stringResource(R.string.server_address),
-                    style = MaterialTheme.typography.titleLarge
-                )
-            }
+            // ---- Account ----
             item {
                 Card(
                     colors = CardDefaults.cardColors(
@@ -273,31 +257,36 @@ fun MeScreen(viewModel: MeViewModel) {
                     )
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        OutlinedTextField(
-                            value = serverUrlText,
-                            onValueChange = { serverUrlText = it },
-                            label = { Text(text = stringResource(R.string.server_address_hint)) },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
+                        Text(
+                            text = stringResource(R.string.account_title),
+                            style = MaterialTheme.typography.titleMedium
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = {
-                                    serverUrlText = "http://100.72.221.19:6999"
-                                    viewModel.saveBaseUrl(serverUrlText)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        val account = me?.account
+                        Text(
+                            text = account?.email ?: stringResource(R.string.account_not_logged_in),
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (account != null && !account.emailVerified) {
+                            Text(
+                                text = stringResource(R.string.account_unverified),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = onAccountClick,
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Text(
+                                text = if (account == null) {
+                                    stringResource(R.string.account_login_register)
+                                } else {
+                                    stringResource(R.string.account_manage)
                                 }
-                            ) { Text(text = "Tailscale") }
-                            OutlinedButton(
-                                onClick = {
-                                    serverUrlText = "http://10.0.1.1:6999"
-                                    viewModel.saveBaseUrl(serverUrlText)
-                                }
-                            ) { Text(text = "局域网") }
-                            Button(
-                                onClick = { viewModel.saveBaseUrl(serverUrlText) },
-                                modifier = Modifier.weight(1f)
-                            ) { Text(text = stringResource(R.string.action_save)) }
+                            )
                         }
                     }
                 }
@@ -343,6 +332,10 @@ fun MeScreen(viewModel: MeViewModel) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(onClick = onPrivacyClick) {
+                    Text(text = stringResource(R.string.privacy_policy))
+                }
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }

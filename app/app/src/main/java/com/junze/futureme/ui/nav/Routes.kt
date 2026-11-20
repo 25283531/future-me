@@ -7,6 +7,10 @@ object Routes {
     const val DAILY = "daily"
     const val ME = "me"
 
+    /** Account (email registration / login) and privacy policy. */
+    const val ACCOUNT = "account"
+    const val PRIVACY = "privacy"
+
     /** Wish detail: wish info + its letters + generate button. */
     const val WISH_DETAIL = "wish/{wishId}"
     fun wishDetail(wishId: String) = "wish/$wishId"

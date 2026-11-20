@@ -7,19 +7,15 @@ import com.junze.futureme.data.local.AppDatabase
 import com.junze.futureme.data.prefs.SettingsStore
 import com.junze.futureme.data.repository.FutureMeRepository
 import com.junze.futureme.worker.ReminderWorker
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 
 /**
  * Manual DI container — no DI framework, everything is wired here and
  * passed to screens from MainActivity.
+ *
+ * The backend address is built into the app (ApiClient.DEFAULT_BASE_URL)
+ * — the user cannot change it.
  */
 class FutureMeApp : Application() {
-
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     lateinit var settings: SettingsStore
         private set
@@ -40,12 +36,6 @@ class FutureMeApp : Application() {
             db = AppDatabase.get(this)
         )
         audioPlayer = AudioPlayer(this)
-
-        // Apply the saved backend address before the first request.
-        appScope.launch {
-            val savedUrl = settings.baseUrl.first()
-            apiClient.updateBaseUrl(savedUrl)
-        }
 
         // Daily local reminders at 8:00 and 20:00.
         ReminderWorker.schedule(this)

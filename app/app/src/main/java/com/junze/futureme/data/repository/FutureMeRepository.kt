@@ -3,14 +3,27 @@ package com.junze.futureme.data.repository
 import com.junze.futureme.data.api.ActivityDto
 import com.junze.futureme.data.api.ApiClient
 import com.junze.futureme.data.api.ApiService
+import com.junze.futureme.data.api.AuthResponse
+import com.junze.futureme.data.api.CaptchaDto
+import com.junze.futureme.data.api.ChangePasswordRequest
 import com.junze.futureme.data.api.CheckinStatusDto
+import com.junze.futureme.data.api.CodeRequest
 import com.junze.futureme.data.api.CreateWishRequest
 import com.junze.futureme.data.api.DailySentenceDto
+import com.junze.futureme.data.api.DeleteAccountRequest
 import com.junze.futureme.data.api.DeviceAuthRequest
+import com.junze.futureme.data.api.EmailRequest
 import com.junze.futureme.data.api.GenerateLetterRequest
+import com.junze.futureme.data.api.GenericOkResponse
 import com.junze.futureme.data.api.LetterDto
+import com.junze.futureme.data.api.LoginRequest
+import com.junze.futureme.data.api.MeResponse
 import com.junze.futureme.data.api.MembershipStatusDto
 import com.junze.futureme.data.api.MessageDto
+import com.junze.futureme.data.api.PrivacyDto
+import com.junze.futureme.data.api.RegisterRequest
+import com.junze.futureme.data.api.ResetPasswordRequest
+import com.junze.futureme.data.api.VerifyResponse
 import com.junze.futureme.data.api.VoiceDto
 import com.junze.futureme.data.api.WishDto
 import com.junze.futureme.data.local.AppDatabase
@@ -90,6 +103,82 @@ class FutureMeRepository(
         }
     }
 
+    // ---------- Email accounts ----------
+
+    /** The account token replaces the device token in the same slot:
+     * it still authenticates this device, and additionally carries the
+     * account id (membership becomes per-account). */
+    private suspend fun saveAccountSession(response: AuthResponse) {
+        settings.saveToken(response.token)
+        response.user?.email?.let { settings.saveAccountEmail(it) }
+    }
+
+    suspend fun getCaptcha(): Result<CaptchaDto> = runCatching {
+        apiClient.service().getCaptcha()
+    }
+
+    suspend fun register(
+        email: String, password: String, captchaChallengeId: String, captchaAnswer: String
+    ): Result<AuthResponse> = runCatching {
+        val deviceId = settings.getOrCreateDeviceId()
+        apiClient.service().register(
+            RegisterRequest(email, password, deviceId, captchaChallengeId, captchaAnswer)
+        ).also { saveAccountSession(it) }
+    }
+
+    suspend fun login(email: String, password: String): Result<AuthResponse> = runCatching {
+        val deviceId = settings.getOrCreateDeviceId()
+        apiClient.service().login(LoginRequest(email, password, deviceId))
+            .also { saveAccountSession(it) }
+    }
+
+    /** Log out of the account and fall back to anonymous device auth. */
+    suspend fun logout(): Result<Unit> = runCatching {
+        settings.saveToken(null)
+        settings.saveAccountEmail(null)
+        authenticate()
+        Unit
+    }
+
+    suspend fun getMe(): Result<MeResponse> =
+        withAuth { api, header -> api.getMe(header) }
+
+    suspend fun verifyEmail(code: String): Result<VerifyResponse> =
+        withAuth { api, header -> api.verifyEmail(header, CodeRequest(code)) }
+
+    suspend fun resendVerification(): Result<GenericOkResponse> =
+        withAuth { api, header -> api.resendVerification(header) }
+
+    suspend fun forgotPassword(email: String): Result<GenericOkResponse> = runCatching {
+        apiClient.service().forgotPassword(EmailRequest(email))
+    }
+
+    suspend fun resetPassword(
+        email: String, code: String, newPassword: String
+    ): Result<GenericOkResponse> = runCatching {
+        apiClient.service().resetPassword(ResetPasswordRequest(email, code, newPassword))
+    }
+
+    suspend fun changePassword(
+        currentPassword: String, newPassword: String
+    ): Result<GenericOkResponse> =
+        withAuth { api, header ->
+            api.changePassword(header, ChangePasswordRequest(currentPassword, newPassword))
+        }
+
+    suspend fun deleteAccount(password: String): Result<GenericOkResponse> =
+        withAuth { api, header ->
+            api.deleteAccount(header, DeleteAccountRequest(password))
+        }.onSuccess {
+            // The server deleted the account and this device's data;
+            // drop back to a fresh anonymous device identity.
+            settings.saveToken(null)
+            settings.saveAccountEmail(null)
+        }
+
+    suspend fun getPrivacy(): Result<PrivacyDto> =
+        withAuth { api, header -> api.getPrivacy(header) }
+
     // ---------- Wishes ----------
 
     suspend fun refreshWishes(): Result<Unit> =
@@ -166,10 +255,6 @@ class FutureMeRepository(
             raw.startsWith("/") -> apiClient.baseUrl + raw
             else -> apiClient.baseUrl + "/api/v1/audio/" + raw
         }
-    }
-
-    fun updateBaseUrl(url: String) {
-        apiClient.updateBaseUrl(url)
     }
 
     // ---------- DTO <-> Entity mapping ----------
